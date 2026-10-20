@@ -80,3 +80,11 @@ class BaseEmailProvider(ABC):
     def delete_draft(self, recipient: str, subject: str = "") -> dict[str, Any]:
         """Remove/discard a draft from the provider's drafts folder upon user cancellation."""
         pass
+
+    def get_thread(self, thread_id: str) -> dict[str, Any]:
+        """Fetch conversation thread context for a specific thread identifier."""
+        return {"ok": False, "thread_id": thread_id, "messages": []}
+
+    def disconnect(self) -> dict[str, Any]:
+        """Disconnect and revoke credentials for this provider."""
+        return {"ok": True, "message": "Disconnected"}

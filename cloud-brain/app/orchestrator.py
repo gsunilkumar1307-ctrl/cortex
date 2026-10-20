@@ -384,10 +384,12 @@ class CortexOrchestrator:
                     pending["body"] = updated_draft.body
                     pending["draft"] = updated_draft
                     pending["sender_account"] = updated_draft.sender_account
+                    pending["attachments"] = updated_draft.attachments
                     task.params["subject"] = updated_draft.subject
                     task.params["body"] = updated_draft.body
                     task.params["formatted_body"] = updated_draft.body
                     task.params["sender_account"] = updated_draft.sender_account
+                    task.params["attachments"] = updated_draft.attachments
                     task.params["approval_hash"] = updated_draft.approval_hash
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.add_event("draft_edited", f"Draft updated: {message}")
@@ -1198,6 +1200,72 @@ class CortexOrchestrator:
                     pass
         self._persist_task(task)
         return task.to_dict()
+
+    def edit_pending_draft(
+        self,
+        task_id: str,
+        recipient: str | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        sender_account: str | None = None,
+        attachments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Programmatic structured editing of a pending draft task."""
+        task = self._get_task(task_id)
+        if task.status != TaskStatus.WAITING_APPROVAL:
+            return {"ok": False, "error": "Task is not waiting for approval.", "task": task.to_dict()}
+
+        if recipient:
+            task.params["recipient"] = recipient
+            task.params["recipient_email"] = recipient
+        if subject is not None:
+            task.params["subject"] = subject
+        if body is not None:
+            task.params["body"] = body
+            task.params["formatted_body"] = body
+        if sender_account is not None:
+            task.params["sender_account"] = sender_account
+        if attachments is not None:
+            task.params["attachments"] = attachments
+
+        draft = EmailDraft(
+            recipient=task.params.get("recipient_email") or task.params.get("recipient", ""),
+            subject=task.params.get("subject", ""),
+            body=task.params.get("formatted_body") or task.params.get("body", ""),
+            sender_account=task.params.get("sender_account", ""),
+            attachments=task.params.get("attachments", []),
+        )
+        task.params["approval_hash"] = draft.compute_hash()
+        task.add_event("draft_edited", "Draft updated via structured editor.")
+
+        # Update pending_action if matching
+        if self.pending_action and self.pending_action.get("task_id") == task_id:
+            self.pending_action["subject"] = draft.subject
+            self.pending_action["body"] = draft.body
+            self.pending_action["draft"] = draft
+            self.pending_action["sender_account"] = draft.sender_account
+            self.pending_action["attachments"] = draft.attachments
+
+        draft_saved = True
+        save_error = ""
+        try:
+            res = self.automation.execute(TaskCommand.DRAFT_MAIL, {
+                "recipient": draft.recipient,
+                "subject": draft.subject,
+                "body": draft.body,
+                "account": draft.sender_account,
+                "attachments": draft.attachments,
+            })
+            if hasattr(res, "ok") and not res.ok:
+                draft_saved = False
+                save_error = res.message
+        except Exception as e:
+            draft_saved = False
+            save_error = str(e)
+
+        self._persist_task(task)
+        card = self._format_approval_card(draft, draft_saved=draft_saved, save_error=save_error)
+        return {"ok": True, "task": task.to_dict(), "message": card, "draft_saved": draft_saved}
 
     def events(self, task_id: str) -> list[dict[str, Any]]:
         return [event.to_dict() for event in self._get_task(task_id).audit_trail]

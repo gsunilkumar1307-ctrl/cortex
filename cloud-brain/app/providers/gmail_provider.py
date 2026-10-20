@@ -363,3 +363,143 @@ class GmailProvider(BaseEmailProvider):
 
         # Real Gmail draft deletion
         return {"ok": True, "message": f"Draft for {recipient} cleared."}
+
+    def get_authorization_url(self, redirect_uri: str, state: str = "cortex-oauth-state") -> str:
+        """Generate Google OAuth 2.0 authorization URL for user consent."""
+        client_id = self.client_id or os.environ.get("GOOGLE_CLIENT_ID", "")
+        if not client_id:
+            raise ValueError("GOOGLE_CLIENT_ID must be configured to generate an authorization URL.")
+        scopes = [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/userinfo.email",
+        ]
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(scopes),
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": state,
+        }
+        return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> dict[str, Any]:
+        """Exchange OAuth authorization code for access and refresh tokens."""
+        if self.sandbox:
+            self.access_token = "gmail-sandbox-access-token"
+            self.refresh_token = "gmail-sandbox-refresh-token"
+            return {"ok": True, "access_token": self.access_token, "expires_in": 3600}
+
+        client_id = self.client_id or os.environ.get("GOOGLE_CLIENT_ID", "")
+        client_secret = self.client_secret or os.environ.get("GOOGLE_CLIENT_SECRET", "")
+        if not client_id or not client_secret:
+            return {"ok": False, "error": "Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET"}
+
+        token_url = "https://oauth2.googleapis.com/token"
+        payload = urllib.parse.urlencode({
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(token_url, data=payload, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                self.access_token = data.get("access_token")
+                if data.get("refresh_token"):
+                    self.refresh_token = data.get("refresh_token")
+                return {"ok": True, "access_token": self.access_token, "expires_in": data.get("expires_in")}
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to exchange OAuth code: {e}"}
+
+    def refresh_access_token(self) -> bool:
+        """Use refresh_token to obtain a fresh access token without user prompt."""
+        if self.sandbox:
+            self.access_token = "gmail-sandbox-refreshed-token"
+            return True
+
+        refresh_tok = self.refresh_token or os.environ.get("GMAIL_REFRESH_TOKEN", "")
+        client_id = self.client_id or os.environ.get("GOOGLE_CLIENT_ID", "")
+        client_secret = self.client_secret or os.environ.get("GOOGLE_CLIENT_SECRET", "")
+        if not refresh_tok or not client_id or not client_secret:
+            return False
+
+        token_url = "https://oauth2.googleapis.com/token"
+        payload = urllib.parse.urlencode({
+            "refresh_token": refresh_tok,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(token_url, data=payload, method="POST")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                new_token = data.get("access_token")
+                if new_token:
+                    self.access_token = new_token
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def get_thread(self, thread_id: str) -> dict[str, Any]:
+        """Fetch conversation thread context for a specific thread identifier."""
+        if self.sandbox:
+            return {
+                "ok": True,
+                "thread_id": thread_id,
+                "messages": [
+                    {
+                        "id": f"{thread_id}-msg-1",
+                        "sender": "Dr. Shanmukha Nagaraj <hod.cse@rvce.edu.in>",
+                        "date": "Oct 10, 2026",
+                        "snippet": "Original marks cards can be collected from the department office.",
+                    }
+                ],
+            }
+
+        if not self.is_authenticated():
+            return {"ok": False, "thread_id": thread_id, "messages": [], "error": "Not authenticated"}
+
+        try:
+            req = urllib.request.Request(
+                f"{self.API_BASE}/threads/{thread_id}",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+            )
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                msgs = []
+                for m in data.get("messages", []):
+                    headers = {h["name"].lower(): h["value"] for h in m.get("payload", {}).get("headers", [])}
+                    msgs.append({
+                        "id": m.get("id"),
+                        "sender": headers.get("from", ""),
+                        "subject": headers.get("subject", ""),
+                        "date": headers.get("date", ""),
+                        "snippet": m.get("snippet", ""),
+                    })
+                return {"ok": True, "thread_id": thread_id, "messages": msgs}
+        except Exception as e:
+            return {"ok": False, "thread_id": thread_id, "messages": [], "error": str(e)}
+
+    def disconnect(self) -> dict[str, Any]:
+        """Revoke current token and clear authentication."""
+        if self.access_token and not self.sandbox:
+            try:
+                revoke_url = f"https://oauth2.googleapis.com/revoke?token={self.access_token}"
+                req = urllib.request.Request(revoke_url, data=b"", method="POST")
+                urllib.request.urlopen(req, timeout=5)
+            except Exception:
+                pass
+        self.access_token = None
+        self.refresh_token = None
+        return {"ok": True, "message": "Gmail account disconnected successfully."}
+

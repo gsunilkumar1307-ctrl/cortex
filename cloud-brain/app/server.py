@@ -1,7 +1,9 @@
+from __future__ import annotations
 import os
 import io
 import sys
 from pathlib import Path
+from typing import Optional, List
 
 # ── PATH must be set BEFORE importing speech_recognition ──────────────────────
 # SpeechRecognition uses shutil.which("flac") at import time on some platforms.
@@ -121,6 +123,78 @@ async def post_cancel(task_id: str):
         return orchestrator.cancel(task_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class EditDraftRequest(BaseModel):
+    recipient: Optional[str] = None
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    sender_account: Optional[str] = None
+    attachments: Optional[List[str]] = None
+
+class OAuthCallbackRequest(BaseModel):
+    code: str
+    redirect_uri: str
+
+@app.post("/tasks/{task_id}/edit")
+async def post_edit_draft(task_id: str, req: EditDraftRequest):
+    try:
+        return orchestrator.edit_pending_draft(
+            task_id=task_id,
+            recipient=req.recipient,
+            subject=req.subject,
+            body=req.body,
+            sender_account=req.sender_account,
+            attachments=req.attachments,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/email/accounts")
+async def get_email_accounts():
+    """List connected email accounts across Apple Mail and Gmail."""
+    try:
+        from providers.manager import MailProviderManager
+        mgr = MailProviderManager(dry_run=False)
+        return {"accounts": mgr.list_accounts()}
+    except Exception as e:
+        return {"accounts": [], "error": str(e)}
+
+@app.get("/email/auth/url")
+async def get_gmail_auth_url(redirect_uri: str = "http://127.0.0.1:8765/email/auth/callback"):
+    """Get Google OAuth2 authorization URL for Gmail consent."""
+    try:
+        from providers.gmail_provider import GmailProvider
+        gmail = GmailProvider()
+        url = gmail.get_authorization_url(redirect_uri=redirect_uri)
+        return {"url": url, "redirect_uri": redirect_uri}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/email/auth/callback")
+async def post_gmail_auth_callback(req: OAuthCallbackRequest):
+    """Exchange authorization code for Gmail tokens."""
+    try:
+        from providers.gmail_provider import GmailProvider
+        gmail = GmailProvider()
+        res = gmail.exchange_code(req.code, req.redirect_uri)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/email/disconnect")
+async def post_email_disconnect(provider_name: str = "gmail"):
+    """Disconnect and revoke provider credentials."""
+    try:
+        from providers.manager import MailProviderManager
+        mgr = MailProviderManager(dry_run=False)
+        prov = mgr.providers.get(provider_name.lower())
+        if prov:
+            return prov.disconnect()
+        return {"ok": False, "error": f"Unknown provider {provider_name}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

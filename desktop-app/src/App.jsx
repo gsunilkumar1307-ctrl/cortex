@@ -250,6 +250,73 @@ function DraftModal({ onClose, onSend }) {
   );
 }
 
+// ─── Edit Draft Modal ─────────────────────────────────────────────────────────
+function EditDraftModal({ task, onClose, onSave, onSaveAndApprove }) {
+  const p = task?.pending_approval || task?.params || {};
+  const [to, setTo]           = useState(p.recipient || "");
+  const [subj, setSubj]       = useState(p.subject || "");
+  const [body, setBody]       = useState(p.body || "");
+  const [att, setAtt]         = useState((p.attachments || []).join(", "));
+  const [saving, setSaving]   = useState(false);
+
+  async function handleSave(andApprove = false) {
+    if (!to.trim()) return;
+    setSaving(true);
+    try {
+      if (andApprove) {
+        await onSaveAndApprove({ recipient: to, subject: subj, body, attachments: att });
+      } else {
+        await onSave({ recipient: to, subject: subj, body, attachments: att });
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="palette-backdrop" onClick={onClose}>
+      <div className="draft-modal" onClick={e => e.stopPropagation()}>
+        <div className="draft-modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <FileEdit size={16} />
+            <span>Edit Draft (Server-Verified)</span>
+          </div>
+          <button className="draft-modal-close" onClick={onClose}><X size={14} /></button>
+        </div>
+        <div className="draft-modal-fields">
+          <div className="draft-modal-row">
+            <label>To (Recipients)</label>
+            <input value={to} onChange={e => setTo(e.target.value)} placeholder="recipient@email.com" />
+          </div>
+          <div className="draft-modal-row">
+            <label>Subject</label>
+            <input value={subj} onChange={e => setSubj(e.target.value)} placeholder="Subject…" />
+          </div>
+          <div className="draft-modal-row">
+            <label>Attachments (comma-separated)</label>
+            <input value={att} onChange={e => setAtt(e.target.value)} placeholder="file1.pdf, report.docx" />
+          </div>
+          <div className="draft-modal-row body-row">
+            <label>Message Body</label>
+            <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="Write your message…" rows={7} />
+          </div>
+        </div>
+        <div className="draft-modal-actions">
+          <button className="btn-draft-action cancel" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn-draft-action save" onClick={() => handleSave(false)} disabled={saving}>
+            <Check size={14} /> {saving ? "Saving…" : "Save Changes"}
+          </button>
+          <button className="btn-draft-action send" onClick={() => handleSave(true)} disabled={saving}>
+            <Send size={14} /> Save & Approve
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Command Palette ─────────────────────────────────────────────────────────
 function CommandPalette({ onClose, onCommand, onDraftModal }) {
   const [query, setQuery] = useState("");
@@ -353,6 +420,7 @@ function App() {
   const [listening, setListening]     = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [draftOpen, setDraftOpen]     = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [detectedLang, setDetectedLang] = useState("en");
 
@@ -732,6 +800,43 @@ function App() {
     });
   }
 
+  // ── Server-verified draft editing ──────────────────────────────────────────
+  async function handleSaveEdit({ recipient, subject, body, attachments }) {
+    if (!task) return;
+    const attList = typeof attachments === "string"
+      ? attachments.split(",").map(s => s.trim()).filter(Boolean)
+      : (attachments || []);
+    const res = await fetch(`${API}/tasks/${task.id}/edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient,
+        subject,
+        body,
+        attachments: attList,
+        sender_account: task.params?.sender_account
+      }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setTask(updated.task || updated);
+      setAssistant("Draft updated! Cryptographic hash recalculated. Review the revised draft and approve to send.");
+      setEditModalOpen(false);
+      playChime("success");
+      return updated;
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setAssistant(`Failed to update draft: ${err.detail || "Server error"}`);
+      playChime("alert");
+      throw new Error(err.detail || "Edit failed");
+    }
+  }
+
+  async function handleSaveAndApprove(fields) {
+    await handleSaveEdit(fields);
+    await decide(true);
+  }
+
   async function cancel() {
     playChime("deactivate");
     stopAudioPipeline();
@@ -822,6 +927,9 @@ function App() {
                 <button className="btn-approve" onClick={() => decide(true)}>
                   <Check size={15} /> Approve
                 </button>
+                <button className="btn-edit" onClick={() => setEditModalOpen(true)}>
+                  <FileEdit size={15} /> Edit Draft
+                </button>
                 <button className="btn-reject" onClick={() => decide(false)}>
                   <X size={15} /> Reject
                 </button>
@@ -885,6 +993,16 @@ function App() {
         <DraftModal
           onClose={() => setDraftOpen(false)}
           onSend={(cmd) => sendMessage("text", cmd)}
+        />
+      )}
+
+      {/* Edit Draft Modal (Server-Verified) */}
+      {editModalOpen && task?.status === "waiting_approval" && (
+        <EditDraftModal
+          task={task}
+          onClose={() => setEditModalOpen(false)}
+          onSave={handleSaveEdit}
+          onSaveAndApprove={handleSaveAndApprove}
         />
       )}
 
