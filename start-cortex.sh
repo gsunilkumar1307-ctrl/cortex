@@ -28,22 +28,37 @@ echo ""
 
 # ── 1. Gemini API key ──────────────────────────────────────
 if [ -z "${GEMINI_API_KEY:-}" ]; then
-  echo -e "${Y}  GEMINI_API_KEY not set.${NC}"
-  echo -n "  Paste your Gemini API key and press Enter: "
-  read -r GEMINI_API_KEY
-  [ -z "$GEMINI_API_KEY" ] && fail "No API key provided. Get one at https://aistudio.google.com/app/apikey"
-  export GEMINI_API_KEY
-
-  # Persist it for future sessions
-  PROFILE="$HOME/.zshrc"
-  [ ! -f "$PROFILE" ] && touch "$PROFILE"
-  if ! grep -q "GEMINI_API_KEY" "$PROFILE" 2>/dev/null; then
-    echo "" >> "$PROFILE"
-    echo "export GEMINI_API_KEY=\"$GEMINI_API_KEY\"  # Added by Cortex" >> "$PROFILE"
-    ok "API key saved to ~/.zshrc (permanent — won't ask again)"
+  if [ -f "$HOME/.zshrc" ]; then
+    SAVED_KEY=$(grep -E "^export GEMINI_API_KEY=" "$HOME/.zshrc" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2 || true)
+    if [ -n "$SAVED_KEY" ]; then
+      export GEMINI_API_KEY="$SAVED_KEY"
+    fi
   fi
 fi
-ok "Gemini API key found"
+
+if [ -z "${GEMINI_API_KEY:-}" ]; then
+  echo -e "${Y}  GEMINI_API_KEY not set.${NC}"
+  if [ -t 0 ]; then
+    echo -n "  Paste your Gemini API key (or press Enter for Local Offline Mode): "
+    read -r USER_KEY || true
+    if [ -n "$USER_KEY" ]; then
+      export GEMINI_API_KEY="$USER_KEY"
+      PROFILE="$HOME/.zshrc"
+      [ ! -f "$PROFILE" ] && touch "$PROFILE"
+      if ! grep -q "GEMINI_API_KEY" "$PROFILE" 2>/dev/null; then
+        echo "" >> "$PROFILE"
+        echo "export GEMINI_API_KEY=\"$GEMINI_API_KEY\"  # Added by Cortex" >> "$PROFILE"
+        ok "API key saved to ~/.zshrc (permanent — won't ask again)"
+      fi
+    fi
+  fi
+fi
+
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  ok "Gemini API key configured"
+else
+  warn "Running in Local Mode (offline regex intent engine + Apple Mail automation)"
+fi
 export CORTEX_EXECUTION_MODE="live"
 ok "Execution mode: live (automation enabled)"
 
