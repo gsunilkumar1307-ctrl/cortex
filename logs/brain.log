@@ -1,0 +1,96 @@
+/Users/gsunilkumar/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.api_core supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.11, and then update google.api_core.
+  warnings.warn(message, FutureWarning)
+/Users/gsunilkumar/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+/Users/gsunilkumar/Library/Python/3.9/lib/python/site-packages/google/auth/__init__.py:54: FutureWarning: You are using a Python version 3.9 past its end of life. Google will update google-auth with critical bug fixes on a best-effort basis, but not with any other fixes or features. Please upgrade your Python version, and then update google-auth.
+  warnings.warn(eol_message.format("3.9"), FutureWarning)
+/Users/gsunilkumar/Library/Python/3.9/lib/python/site-packages/google/oauth2/__init__.py:40: FutureWarning: You are using a Python version 3.9 past its end of life. Google will update google-auth with critical bug fixes on a best-effort basis, but not with any other fixes or features. Please upgrade your Python version, and then update google-auth.
+  warnings.warn(eol_message.format("3.9"), FutureWarning)
+/Users/gsunilkumar/Desktop/antigravity/Codex/2026-06-17/files-mentioned-by-the-user-cortex/cloud-brain/app/orchestrator.py:47: FutureWarning: 
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving 
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  import google.generativeai as genai
+[cortex] Failed to load conversation history: 
+[cortex] Gemini analysis failed: 400 API key not valid. Please pass a valid API key. [reason: "API_KEY_INVALID"
+domain: "googleapis.com"
+metadata {
+  key: "service"
+  value: "generativelanguage.googleapis.com"
+}
+, locale: "en-US"
+message: "API key not valid. Please pass a valid API key."
+]. Falling back to regex parser.
+I1018 10:46:02.352570  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352793  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352824  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352835  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352843  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352849  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352855  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352861  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352867  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352873  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352878  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352883  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352888  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352893  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352897  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352903  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352920  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352924  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352929  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352933  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352937  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352942  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352955  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352959  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352963  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352967  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352972  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352976  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352980  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352984  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352988  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352992  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.352997  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353001  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353005  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353009  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353013  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353017  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353021  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353025  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353029  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353033  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353037  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353041  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353045  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353049  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353053  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353056  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353060  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353064  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353068  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353072  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353081  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353085  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353089  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353093  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353097  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353101  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353105  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353108  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353112  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.353116  435291 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:02.840159  435470 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:12.252096  435616 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:39.233635  436310 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:46:39.755180  436370 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:47:19.236791  437080 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:47:26.199599  437199 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)
+I1018 10:47:33.411598  437351 ev_poll_posix.cc:593] FD from fork parent still in poll list: fd(26, generation: 1)

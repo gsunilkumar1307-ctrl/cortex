@@ -1,0 +1,14 @@
+{
+  "name": "cortex-mvp-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cortex desktop MVP monorepo",
+  "scripts": {
+    "test": "python3 -m unittest discover -s tests",
+    "backend": "python3 cloud-brain/app/server.py"
+  },
+  "workspaces": [
+    "desktop-app",
+    "shared-sdk/typescript"
+  ]
+}

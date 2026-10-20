@@ -1,0 +1,11 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+langgraph>=0.2
+google-generativeai>=0.8
+cryptography>=43
+duckduckgo-search>=6.0
+playwright>=1.40
+pillow>=10.0
+SpeechRecognition>=3.10
+
+

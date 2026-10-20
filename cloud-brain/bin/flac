@@ -1,0 +1,8 @@
+#!/bin/bash
+# Native macOS FLAC converter wrapper for Apple Silicon & Intel
+tmpwav=$(mktemp /tmp/flac_in.XXXXXX.wav)
+tmpflac=$(mktemp /tmp/flac_out.XXXXXX.flac)
+cat > "$tmpwav"
+afconvert -f flac -d flac "$tmpwav" "$tmpflac" 2>/dev/null
+cat "$tmpflac"
+rm -f "$tmpwav" "$tmpflac"
