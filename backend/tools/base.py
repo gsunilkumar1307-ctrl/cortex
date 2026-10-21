@@ -2,15 +2,26 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
-from cortex_sdk import (
-    RiskLevel,
-    TaskCommand,
-    ExecutionResult,
-    Observation,
-    VerificationResult,
-    ExecutionError,
-    TaskContext,
-)
+try:
+    from backend.core.contracts import (
+        RiskLevel,
+        TaskCommand,
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        TaskContext,
+    )
+except ImportError:
+    from core.contracts import (
+        RiskLevel,
+        TaskCommand,
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        TaskContext,
+    )
 
 
 class BaseTool(ABC):

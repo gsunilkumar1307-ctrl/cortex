@@ -9,7 +9,7 @@ from typing import Any
 try:
     from backend.core.contracts import LanguageCode, TaskContext
 except ImportError:
-    from cortex_sdk import LanguageCode, TaskContext
+    from core.contracts import LanguageCode, TaskContext
 
 
 @dataclass

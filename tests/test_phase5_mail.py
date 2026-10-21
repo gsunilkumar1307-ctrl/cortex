@@ -7,15 +7,11 @@ import os
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation, classify_command
-from cortex_memory import EncryptedMemoryStore
-from cortex_sdk import RiskLevel, TaskCommand
-from orchestrator import CortexOrchestrator
+from backend.capabilities import DeviceAutomation, classify_command
+from backend.persistence import EncryptedMemoryStore
+from backend.core.contracts import RiskLevel, TaskCommand
+from backend.agent import CortexOrchestrator
 
 
 class Phase5MailTests(unittest.TestCase):
@@ -55,7 +51,7 @@ class Phase5MailTests(unittest.TestCase):
             mock_summary.text = "You have 3 new emails. Akash says the Phase 5 tests look great, and Maruthi wants to sync this afternoon on the UI."
             mock_model.generate_content.side_effect = [mock_intent, mock_summary]
 
-            import orchestrator
+            from backend.agent import orchestrator
             old_has_genai = orchestrator.HAS_GENAI
             orchestrator.HAS_GENAI = True
             old_key = os.environ.get("GEMINI_API_KEY")

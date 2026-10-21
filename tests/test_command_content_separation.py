@@ -5,15 +5,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_memory import EncryptedMemoryStore
-from cortex_sdk import TaskCommand, TaskStatus
-from orchestrator import CortexOrchestrator
+from backend.capabilities import DeviceAutomation
+from backend.persistence import EncryptedMemoryStore
+from backend.core.contracts import TaskCommand, TaskStatus
+from backend.agent import CortexOrchestrator
 
 
 class CommandContentSeparationTests(unittest.TestCase):

@@ -10,16 +10,12 @@ import io
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_memory import EncryptedMemoryStore
-from orchestrator import CortexOrchestrator, EmailDraft
-from providers.gmail_provider import GmailProvider
-from server import app
+from backend.capabilities import DeviceAutomation
+from backend.persistence import EncryptedMemoryStore
+from backend.agent import CortexOrchestrator, EmailDraft
+from backend.integrations.email.gmail_provider import GmailProvider
+from backend.api.server import app
 from fastapi.testclient import TestClient
 
 

@@ -21,20 +21,16 @@ from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_automation.mail_actions import (
+from backend.capabilities import DeviceAutomation
+from backend.capabilities.mail_actions import (
     _draft_records,
     _sent_records,
     clear_mail_records,
     MailAutomation,
 )
-from cortex_memory import EncryptedMemoryStore
-from cortex_sdk.contracts import (
+from backend.persistence import EncryptedMemoryStore
+from backend.core.contracts import (
     ExecutionResult,
     Observation,
     Plan,
@@ -45,12 +41,15 @@ from cortex_sdk.contracts import (
     TaskStatus,
     VerificationResult,
 )
-from email_engine import EmailDraft, ProfessionalEmailEngine
-from execution_engine import ExecutionEngine
-from orchestrator import CortexOrchestrator
-from policy import PolicyEngine
-from recipient_resolver import RecipientResolver
-from tools.mail_tool import MailTool
+from backend.agent import (
+    EmailDraft,
+    ProfessionalEmailEngine,
+    CortexOrchestrator,
+    RecipientResolver,
+)
+from backend.agent.execution_engine import ExecutionEngine
+from backend.agent.policy import PolicyEngine
+from backend.tools.mail_tool import MailTool
 
 
 class TestIntelligentEmailAgent(unittest.TestCase):

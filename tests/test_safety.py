@@ -4,11 +4,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
 
-from cortex_automation import classify_command
-from cortex_sdk import RiskLevel, TaskCommand
+from backend.capabilities import classify_command
+from backend.core.contracts import RiskLevel, TaskCommand
 
 
 class SafetyTests(unittest.TestCase):

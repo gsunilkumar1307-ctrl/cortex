@@ -7,7 +7,7 @@ from typing import Any
 try:
     from backend.core.contracts import RiskLevel, TaskCommand
 except ImportError:
-    from cortex_sdk import RiskLevel, TaskCommand
+    from core.contracts import RiskLevel, TaskCommand
 
 
 @dataclass

@@ -8,19 +8,13 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_automation.device_actions import _is_safe_path
-from cortex_automation.mail_actions import MailAutomation
-from cortex_memory import EncryptedMemoryStore
-from cortex_sdk import RiskLevel, TaskCommand, TaskStatus, command_from_intent
-from orchestrator import CortexOrchestrator
-from planner import AutonomousPlanner, Plan, PlanStep
-from tools.registry import ToolRegistry
+from backend.capabilities import DeviceAutomation, MailAutomation
+from backend.capabilities.device_actions import _is_safe_path
+from backend.persistence import EncryptedMemoryStore
+from backend.core.contracts import RiskLevel, TaskCommand, TaskStatus, command_from_intent
+from backend.agent import CortexOrchestrator, AutonomousPlanner, Plan, PlanStep
+from backend.tools.registry import ToolRegistry
 
 
 class TestMasterBuildFiles(unittest.TestCase):

@@ -19,11 +19,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from cortex_automation import DeviceAutomation
-from cortex_automation.mail_actions import clear_mail_records
-from cortex_memory import EncryptedMemoryStore
-from orchestrator import CortexOrchestrator
-from providers import AppleMailProvider, GmailProvider, MailProviderManager
+from backend.capabilities import DeviceAutomation
+from backend.capabilities.mail_actions import clear_mail_records
+from backend.persistence import EncryptedMemoryStore
+from backend.agent import CortexOrchestrator
+from backend.integrations.email import AppleMailProvider, GmailProvider, MailProviderManager
 
 
 def print_step(title: str):

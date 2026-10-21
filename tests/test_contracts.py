@@ -4,9 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
 
-from cortex_sdk import TaskCommand, command_from_intent
+from backend.core.contracts import TaskCommand, command_from_intent
 
 
 class ContractTests(unittest.TestCase):

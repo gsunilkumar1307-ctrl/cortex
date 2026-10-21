@@ -44,9 +44,9 @@ try:
     from backend.agent.email_engine import ProfessionalEmailEngine, EmailDraft, sanitize_untrusted_email_content
     from backend.agent.recipient_resolver import RecipientResolver, ResolutionResult, ResolvedRecipient
 except ImportError:
-    from cortex_automation import DeviceAutomation, classify_command
-    from cortex_memory import EncryptedMemoryStore
-    from cortex_sdk import (
+    from capabilities import DeviceAutomation, classify_command
+    from persistence import EncryptedMemoryStore
+    from core.contracts import (
         LanguageCode,
         RiskLevel,
         Task,
@@ -64,15 +64,15 @@ except ImportError:
         ExecutionResult,
         FinalResult,
     )
-    from language_detector import detect_language, language_instruction
-    from localization import (
+    from core.language_detector import detect_language, language_instruction
+    from core.localization import (
         localize,
         normalize_app_name,
         get_cortex_identity,
         get_cortex_status,
         get_offline_knowledge,
     )
-    from skills import search_web
+    from integrations.search import search_web
     from policy import PolicyEngine
     from tools.registry import ToolRegistry
     from execution_engine import ExecutionEngine

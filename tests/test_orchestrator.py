@@ -7,14 +7,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_memory import EncryptedMemoryStore
-from orchestrator import CortexOrchestrator
+from backend.capabilities import DeviceAutomation
+from backend.persistence import EncryptedMemoryStore
+from backend.agent import CortexOrchestrator
 
 
 class OrchestratorTests(unittest.TestCase):
@@ -140,7 +136,7 @@ class OrchestratorTests(unittest.TestCase):
             mock_model.generate_content.return_value = mock_response
 
             # Force HAS_GENAI to be True for testing
-            import orchestrator
+            from backend.agent import orchestrator
             old_has_genai = orchestrator.HAS_GENAI
             orchestrator.HAS_GENAI = True
             
@@ -165,7 +161,7 @@ class OrchestratorTests(unittest.TestCase):
         response = orchestrator.chat("search the web for weather today")
         self.assertEqual(response["task"]["command"], "web_search")
 
-    @unittest.mock.patch("orchestrator.search_web")
+    @unittest.mock.patch("backend.agent.orchestrator.search_web")
     def test_web_search_gemini(self, mock_search):
         import unittest.mock
         import os
@@ -184,7 +180,7 @@ class OrchestratorTests(unittest.TestCase):
             
             mock_model.generate_content.side_effect = [mock_response_1, mock_response_2]
 
-            import orchestrator
+            from backend.agent import orchestrator
             old_has_genai = orchestrator.HAS_GENAI
             orchestrator.HAS_GENAI = True
             

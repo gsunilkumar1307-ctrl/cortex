@@ -59,15 +59,11 @@ from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_automation.mail_actions import _draft_records, _sent_records, clear_mail_records
-from cortex_memory import EncryptedMemoryStore
-from cortex_sdk.contracts import (
+from backend.capabilities import DeviceAutomation
+from backend.capabilities.mail_actions import _draft_records, _sent_records, clear_mail_records
+from backend.persistence import EncryptedMemoryStore
+from backend.core.contracts import (
     ApprovalRequest,
     ExecutionError,
     ExecutionResult,
@@ -81,13 +77,12 @@ from cortex_sdk.contracts import (
     TaskStatus,
     VerificationResult,
 )
-from email_engine import ProfessionalEmailEngine
-from execution_engine import ExecutionEngine
-from orchestrator import CortexOrchestrator
-from policy import PolicyEngine
-from tools.base import BaseTool
-from tools.mail_tool import MailTool
-from tools.registry import ToolRegistry
+from backend.agent import ProfessionalEmailEngine, CortexOrchestrator
+from backend.agent.execution_engine import ExecutionEngine
+from backend.agent.policy import PolicyEngine
+from backend.tools.base import BaseTool
+from backend.tools.mail_tool import MailTool
+from backend.tools.registry import ToolRegistry
 
 
 class TestAgentPipelineAndEmailEngine(unittest.TestCase):

@@ -2,19 +2,34 @@ from __future__ import annotations
 
 import time
 from typing import Any, Callable
-from cortex_sdk import (
-    Task,
-    TaskStatus,
-    PlanStep,
-    Plan,
-    ToolCall,
-    Observation,
-    VerificationResult,
-    ExecutionResult,
-    ExecutionError,
-    FinalResult,
-    RiskLevel,
-)
+try:
+    from backend.core.contracts import (
+        Task,
+        TaskStatus,
+        PlanStep,
+        Plan,
+        ToolCall,
+        Observation,
+        VerificationResult,
+        ExecutionResult,
+        ExecutionError,
+        FinalResult,
+        RiskLevel,
+    )
+except ImportError:
+    from core.contracts import (
+        Task,
+        TaskStatus,
+        PlanStep,
+        Plan,
+        ToolCall,
+        Observation,
+        VerificationResult,
+        ExecutionResult,
+        ExecutionError,
+        FinalResult,
+        RiskLevel,
+    )
 try:
     from backend.tools.base import BaseTool
     from backend.tools.registry import ToolRegistry

@@ -5,15 +5,26 @@ import os
 import time
 from pathlib import Path
 from typing import Any
-from cortex_sdk import (
-    ExecutionResult,
-    Observation,
-    VerificationResult,
-    ExecutionError,
-    RiskLevel,
-    TaskCommand,
-    TaskContext,
-)
+try:
+    from backend.core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
+except ImportError:
+    from core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
 from .base import BaseTool
 
 

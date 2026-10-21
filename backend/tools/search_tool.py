@@ -2,19 +2,30 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from cortex_sdk import (
-    ExecutionResult,
-    Observation,
-    VerificationResult,
-    ExecutionError,
-    RiskLevel,
-    TaskCommand,
-    TaskContext,
-)
+try:
+    from backend.core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
+except ImportError:
+    from core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
 try:
     from backend.integrations.search import search_web
 except ImportError:
-    from skills import search_web
+    from integrations.search import search_web
 from .base import BaseTool
 
 

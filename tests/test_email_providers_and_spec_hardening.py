@@ -18,20 +18,15 @@ from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
-sys.path.insert(0, str(ROOT / "automation-engine"))
-sys.path.insert(0, str(ROOT / "memory-service"))
-sys.path.insert(0, str(ROOT / "cloud-brain" / "app"))
 
-from cortex_automation import DeviceAutomation
-from cortex_automation.mail_actions import clear_mail_records
-from cortex_memory import EncryptedMemoryStore
-from cortex_sdk.contracts import RiskLevel, TaskCommand, TaskStatus
-from email_engine import EmailDraft, ProfessionalEmailEngine
-from execution_engine import ExecutionEngine
-from orchestrator import CortexOrchestrator
-from policy import PolicyEngine
-from providers import AppleMailProvider, GmailProvider, MailProviderManager
+from backend.capabilities import DeviceAutomation
+from backend.capabilities.mail_actions import clear_mail_records
+from backend.persistence import EncryptedMemoryStore
+from backend.core.contracts import RiskLevel, TaskCommand, TaskStatus
+from backend.agent import EmailDraft, ProfessionalEmailEngine, CortexOrchestrator
+from backend.agent.execution_engine import ExecutionEngine
+from backend.agent.policy import PolicyEngine
+from backend.integrations.email import AppleMailProvider, GmailProvider, MailProviderManager
 
 
 class TestEmailProvidersAndHardening(unittest.TestCase):

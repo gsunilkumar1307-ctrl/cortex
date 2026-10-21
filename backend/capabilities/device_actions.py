@@ -11,8 +11,10 @@ from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from cortex_sdk import TaskCommand
+try:
+    from backend.core.contracts import TaskCommand
+except ImportError:
+    from core.contracts import TaskCommand
 
 
 def _is_safe_path(path_str: str) -> tuple[bool, Path]:

@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from cortex_sdk import (
-    ExecutionResult,
-    Observation,
-    VerificationResult,
-    ExecutionError,
-    RiskLevel,
-    TaskCommand,
-    TaskContext,
-)
+try:
+    from backend.core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
+except ImportError:
+    from core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
 from .base import BaseTool
 
 
@@ -197,7 +208,10 @@ class MailTool(BaseTool):
             if self.mail and hasattr(self.mail, "verify_mail_sent"):
                 send_check = self.mail.verify_mail_sent(recipient, subject)
             else:
-                from cortex_automation.mail_actions import _sent_records
+                try:
+                    from backend.capabilities.mail_actions import _sent_records
+                except ImportError:
+                    from capabilities.mail_actions import _sent_records
                 found = any(s.get("recipient", "").lower() == recipient.lower() for s in _sent_records)
                 send_check = {"verified": found, "evidence": "Checked sent register"}
             state["sent_found"] = send_check.get("verified", False)
@@ -284,7 +298,10 @@ class MailTool(BaseTool):
             if self.mail and hasattr(self.mail, "verify_mail_sent"):
                 check = self.mail.verify_mail_sent(recipient, subject)
             else:
-                from cortex_automation.mail_actions import _sent_records
+                try:
+                    from backend.capabilities.mail_actions import _sent_records
+                except ImportError:
+                    from capabilities.mail_actions import _sent_records
                 found = any(s.get("recipient", "").lower() == recipient.lower() for s in _sent_records)
                 check = {"verified": found}
 

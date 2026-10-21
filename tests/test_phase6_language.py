@@ -20,20 +20,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# ── bootstrap Python path ─────────────────────────────────────────────────────
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_ROOT, "shared-sdk", "python"))
-sys.path.insert(0, os.path.join(_ROOT, "cloud-brain", "app"))
-sys.path.insert(0, os.path.join(_ROOT, "automation-engine"))
-sys.path.insert(0, os.path.join(_ROOT, "memory-service", "python"))
-sys.path.insert(0, os.path.join(_ROOT, "memory-service"))
+sys.path.insert(0, _ROOT)
 
-from language_detector import (
+from backend.core.language_detector import (
     detect_language,
     detect_language_fast,
     language_instruction,
 )
-from cortex_sdk import LanguageCode
+from backend.core.contracts import LanguageCode
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,9 +200,9 @@ class TestDetectLanguageWithGemini(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 class TestOrchestratorLanguageTagging(unittest.TestCase):
     def _make_orch(self):
-        from orchestrator import CortexOrchestrator
-        from cortex_automation import DeviceAutomation
-        from cortex_memory import EncryptedMemoryStore
+        from backend.agent import CortexOrchestrator
+        from backend.capabilities import DeviceAutomation
+        from backend.persistence import EncryptedMemoryStore
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         memory = EncryptedMemoryStore(str(Path(tmp.name) / "mem.sqlite3"))
@@ -266,9 +261,9 @@ class TestMultilingualResponses(unittest.TestCase):
     """Verify that Cortex produces authentic, native-language responses across Indic languages."""
 
     def _make_orch(self):
-        from orchestrator import CortexOrchestrator
-        from cortex_automation import DeviceAutomation
-        from cortex_memory import EncryptedMemoryStore
+        from backend.agent import CortexOrchestrator
+        from backend.capabilities import DeviceAutomation
+        from backend.persistence import EncryptedMemoryStore
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         memory = EncryptedMemoryStore(str(Path(tmp.name) / "mem.sqlite3"))

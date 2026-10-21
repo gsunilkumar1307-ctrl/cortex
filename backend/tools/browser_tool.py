@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from cortex_sdk import (
-    ExecutionResult,
-    Observation,
-    VerificationResult,
-    ExecutionError,
-    RiskLevel,
-    TaskCommand,
-    TaskContext,
-)
+try:
+    from backend.core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
+except ImportError:
+    from core.contracts import (
+        ExecutionResult,
+        Observation,
+        VerificationResult,
+        ExecutionError,
+        RiskLevel,
+        TaskCommand,
+        TaskContext,
+    )
 from .base import BaseTool
 
 

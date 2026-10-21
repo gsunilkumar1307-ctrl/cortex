@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from cortex_sdk import RiskLevel, TaskCommand
+try:
+    from backend.core.contracts import RiskLevel, TaskCommand
+except ImportError:
+    from core.contracts import RiskLevel, TaskCommand
 
 APPROVAL_REQUIRED = {
     TaskCommand.CLIPBOARD_WRITE,

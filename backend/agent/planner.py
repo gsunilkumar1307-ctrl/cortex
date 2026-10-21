@@ -4,7 +4,7 @@ from typing import Any
 try:
     from backend.core.contracts import TaskCommand, RiskLevel, Plan, PlanStep, TaskContext
 except ImportError:
-    from cortex_sdk import TaskCommand, RiskLevel, Plan, PlanStep, TaskContext
+    from core.contracts import TaskCommand, RiskLevel, Plan, PlanStep, TaskContext
 
 
 class AutonomousPlanner:
