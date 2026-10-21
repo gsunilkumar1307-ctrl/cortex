@@ -6,6 +6,7 @@ import sys
 import os
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "shared-sdk" / "python"))
 sys.path.insert(0, str(ROOT / "automation-engine"))
 sys.path.insert(0, str(ROOT / "memory-service"))

@@ -1,14 +1,15 @@
 {
-  "name": "cortex-mvp-monorepo",
+  "name": "cortex-workspace",
   "private": true,
-  "version": "0.1.0",
-  "description": "Cortex desktop MVP monorepo",
+  "version": "1.0.0",
+  "description": "Cortex — Autonomous AI Desktop Companion",
   "scripts": {
+    "start": "bash scripts/start-cortex.sh",
     "test": "python3 -m unittest discover -s tests",
-    "backend": "python3 cloud-brain/app/server.py"
+    "verify": "python3 scripts/verify_mail_live.py",
+    "build": "npm run build --prefix apps/desktop"
   },
   "workspaces": [
-    "desktop-app",
-    "shared-sdk/typescript"
+    "apps/desktop"
   ]
 }
