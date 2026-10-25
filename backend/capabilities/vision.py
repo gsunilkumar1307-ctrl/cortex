@@ -69,7 +69,8 @@ def analyze_screen(api_key: str, question: str = "What is on my screen right now
         return {"ok": False, "description": f"Could not capture screen: {e}", "raw_bytes_len": 0}
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        vision_model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        model = genai.GenerativeModel(vision_model_name)
         response = model.generate_content([
             question,
             {"mime_type": "image/png", "data": base64.b64encode(png_bytes).decode()}

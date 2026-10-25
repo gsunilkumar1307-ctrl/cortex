@@ -1,7 +1,9 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, session, systemPreferences } from "electron";
+import { app, BrowserWindow, ipcMain, globalShortcut, session, systemPreferences, screen } from "electron";
 
 let mainWin = null;
 let hudWin = null;
+let isFloatingMode = false;
+let standardBounds = { width: 1120, height: 760, x: undefined, y: undefined };
 
 function setupPermissions() {
   if (process.platform === "darwin") {
@@ -29,8 +31,8 @@ function createMainWindow() {
   mainWin = new BrowserWindow({
     width: 1120,
     height: 760,
-    minWidth: 720,
-    minHeight: 560,
+    minWidth: 400,
+    minHeight: 520,
     title: "Cortex",
     backgroundColor: "#00000000",
     transparent: true,
@@ -40,10 +42,15 @@ function createMainWindow() {
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       contextIsolation: false,
+      nodeIntegration: true,
     },
   });
 
   mainWin.loadURL(process.env.CORTEX_DESKTOP_URL || "http://127.0.0.1:5173");
+
+  mainWin.on("close", () => {
+    mainWin = null;
+  });
 }
 
 function createHudWindow() {
@@ -61,6 +68,7 @@ function createHudWindow() {
     hasShadow: false,
     webPreferences: {
       contextIsolation: false,
+      nodeIntegration: true,
     },
   });
 
@@ -83,6 +91,60 @@ app.whenReady().then(() => {
       if (!mainWin.isFocused()) mainWin.focus();
     }
   });
+
+  // Global shortcut: Option+Space (or Alt+Space) to summon/dismiss Cortex from anywhere
+  try {
+    globalShortcut.register("Alt+Space", () => {
+      if (mainWin) {
+        if (mainWin.isVisible() && mainWin.isFocused()) {
+          mainWin.hide();
+        } else {
+          mainWin.show();
+          mainWin.focus();
+        }
+      }
+    });
+  } catch (err) {
+    console.warn("[electron] Could not register Alt+Space global shortcut:", err);
+  }
+});
+
+// ─── Floating Assistant Mode Controls ──────────────────────────────────────────
+ipcMain.on("set-window-mode", (event, mode) => {
+  if (!mainWin) return;
+  if (mode === "floating") {
+    if (!isFloatingMode) {
+      standardBounds = mainWin.getBounds();
+    }
+    isFloatingMode = true;
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+    const floatWidth = 430;
+    const floatHeight = Math.min(720, screenHeight - 64);
+    
+    mainWin.setAlwaysOnTop(true, "floating");
+    mainWin.setBounds({
+      x: Math.max(0, screenWidth - floatWidth - 24),
+      y: 48,
+      width: floatWidth,
+      height: floatHeight,
+    });
+    mainWin.webContents.send("window-mode-changed", "floating");
+  } else {
+    isFloatingMode = false;
+    mainWin.setAlwaysOnTop(false);
+    if (standardBounds.width && standardBounds.height) {
+      mainWin.setBounds(standardBounds);
+    } else {
+      mainWin.setSize(1120, 760);
+      mainWin.center();
+    }
+    mainWin.webContents.send("window-mode-changed", "standard");
+  }
+});
+
+ipcMain.handle("get-window-mode", () => {
+  return isFloatingMode ? "floating" : "standard";
 });
 
 // HUD IPC bridge

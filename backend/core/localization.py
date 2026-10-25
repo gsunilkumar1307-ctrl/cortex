@@ -272,27 +272,27 @@ def localize(key: str, lang: str = "en", **kwargs: Any) -> str:
 def get_cortex_identity(lang_code: str) -> str:
     """Returns warm, localized self-identity for Cortex."""
     if lang_code == "kn":
-        return "ನಮಸ್ಕಾರ! ನಾನು ಕಾರ್ಟೆಕ್ಸ್ — ನಿಮ್ಮ AI ಡೆಸ್ಕ್‌ಟಾಪ್ ಸಹಾಯಕ. ಅಪ್ಲಿಕೇಶನ್ ತೆರೆಯುವುದು, ಇಮೇಲ್, ವೆಬ್ ಹುಡುಕಾಟ, ಅಥವಾ ಯಾವುದೇ ಪ್ರಶ್ನೆಗೆ ಉತ್ತರಿಸಲು ನಾನು ಸಿದ್ಧನಿದ್ದೇನೆ."
+        return "ನಮಸ್ಕಾರ ಸ್ನೇಹಿತರೇ! ನಾನು ಕಾರ್ಟೆಕ್ಸ್ — ನಿಮ್ಮ ಆಪ್ತ AI ಸಹಾಯಕ ಮತ್ತು ಮಿತ್ರ. ಅಪ್ಲಿಕೇಶನ್‌ಗಳು, ಇಮೇಲ್, ವೆಬ್ ಹುಡುಕಾಟ ಅಥವಾ ಯಾವುದೇ ವಿಷಯವಿರಲಿ — ನಿಮ್ಮ ಜೊತೆ ಮಾತನಾಡಿ ಸಹಾಯ ಮಾಡಲು ಸದಾ ಸಿದ್ಧ!"
     elif lang_code == "hi":
-        return "नमस्ते! मैं Cortex हूँ — आपका AI डेस्कटॉप असिस्टेंट। ऐप्स खोलना, ईमेल, वेब सर्च, या कोई भी सवाल — सब में मदद करता हूँ।"
+        return "नमस्ते दोस्त! मैं Cortex हूँ — आपका सच्चा AI असिस्टेंट और साथी। ऐप्स खोलना, ईमेल, वेब सर्च, या किसी भी सवाल पर बात करना — मैं हमेशा आपके साथ हूँ!"
     elif lang_code == "ta":
-        return "வணக்கம்! நான் Cortex — உங்கள் AI டெஸ்க்டாப் உதவியாளர். ஆப்கள் திறப்பது, மெயில், வலை தேடல் அல்லது எந்த கேள்விக்கும் பதில் சொல்வேன்."
+        return "வணக்கம் நண்பா! நான் Cortex — உங்கள் அன்பான AI தோழன். ஆப்கள் திறப்பது, மெயில், இணையத் தேடல் எதுவானாலும் உங்களுக்கு உதவ நான் தயார்!"
     elif lang_code == "te":
-        return "నమస్కారం! నేను Cortex — మీ AI డెస్క్‌టాప్ అసిస్టెంట్. యాప్స్ తెరవడం, ఇమెయిల్, వెబ్ సెర్చ్ లేదా ఏ ప్రశ్నకైనా జవాబు చెప్పగలను."
-    return "Hello! I'm Cortex — your AI desktop assistant. I can open apps, search the web, answer questions, manage email, and control your computer."
+        return "నమస్కారం మిత్రమా! నేను Cortex — మీ ఆప్త AI స్నేహితుడిని. యాప్స్ తెరవడం, ఇమెయిల్స్, వెబ్ సెర్చ్ లేదా ఏదైనా విషయం గురించి మాట్లాడటానికి నేను ఎప్పుడూ సిద్ధమే!"
+    return "Hey there! I'm Cortex — your friendly AI companion. Whether it's managing your desktop, searching the web, sending emails, or chatting about anything under the sun, I'm right here with you!"
 
 
 def get_cortex_status(lang_code: str) -> str:
-    """Returns warm, localized status ('How are you?') response."""
+    """Returns warm, localized status ('How are you?') response as a close friend."""
     if lang_code == "kn":
-        return "ನಾನು ತುಂಬಾ ಚೆನ್ನಾಗಿದ್ದೇನೆ, ಧನ್ಯವಾದಗಳು! ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
+        return "ನಾನು ತುಂಬಾ ಚೆನ್ನಾಗಿದ್ದೇನೆ ಸ್ನೇಹಿತರೇ! ನಿಮ್ಮ ದಿನ ಹೇಗಿದೆ? ಇವತ್ತು ನಿಮಗಾಗಿ ಏನು ಮಾಡಲಿ?"
     elif lang_code == "hi":
-        return "मैं बहुत अच्छा हूँ, धन्यवाद! मैं आपकी क्या मदद कर सकता हूँ?"
+        return "मैं एकदम बढ़िया और मस्त हूँ दोस्त! आप बताइए, आज आपके लिए क्या करूँ?"
     elif lang_code == "ta":
-        return "நான் நலமாக இருக்கிறேன், நன்றி! உங்களுக்கு எப்படி உதவ வேண்டும்?"
+        return "நான் ரொம்ப நல்லா இருக்கேன் நண்பா! உங்க நாள் எப்படி போகுது? இன்னைக்கு என்ன உதவி வேணும்?"
     elif lang_code == "te":
-        return "నేను బాగున్నాను, ధನ್ಯవాదాలు! నేను మీకు ఎలా సహాయపడగలను?"
-    return "I'm doing great, thank you! How can I help you today?"
+        return "నేను చాలా బాగున్నాను మిత్రమా! మీరు ఎలా ఉన్నారు? ಈరోజు ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
+    return "I'm doing fantastic, thanks for asking! How are you doing today, and what can we tackle together?"
 
 
 def get_offline_knowledge(query: str, lang_code: str) -> str | None:

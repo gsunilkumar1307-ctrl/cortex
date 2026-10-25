@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Cortex — Autonomous AI Desktop Companion",
   "scripts": {
+    "setup": "npm install && npm install --prefix apps/desktop && pip3 install -r requirements.txt",
     "start": "bash scripts/start-cortex.sh",
     "test": "python3 -m unittest discover -s tests",
     "verify": "python3 scripts/verify_mail_live.py",

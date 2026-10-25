@@ -8,8 +8,10 @@ dist/
 build/
 *.sqlite3
 *.db
+work/
 .env
 .env.*
+!.env.example
 screenshots/
 logs/
 *.log

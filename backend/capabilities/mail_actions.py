@@ -57,6 +57,7 @@ class MailAutomation:
                 "message": f"Retrieved {len(sample_emails[:limit])} recent emails.",
             }
 
+        eff_limit = min(limit, 10)
         script = f"""
         tell application "Mail"
             set outText to ""
@@ -65,18 +66,18 @@ class MailAutomation:
                 if totalCount is 0 then
                     return "NO_MESSAGES"
                 end if
-                set takeCount to {limit}
-                if totalCount < {limit} then set takeCount to totalCount
+                set takeCount to {eff_limit}
+                if totalCount < {eff_limit} then set takeCount to totalCount
 
                 set targetMessages to {{}}
                 if {str(unread_only).lower()} then
-                    set scanLimit to 30
+                    set scanLimit to 20
                     if totalCount < scanLimit then set scanLimit to totalCount
                     repeat with i from 1 to scanLimit
                         set candidate to message i of inbox
                         if read status of candidate is false then
                             set end of targetMessages to candidate
-                            if (count of targetMessages) >= {limit} then exit repeat
+                            if (count of targetMessages) >= {eff_limit} then exit repeat
                         end if
                     end repeat
                 else
@@ -88,8 +89,8 @@ class MailAutomation:
                     set snd to sender of m
                     set d to (date received of m) as string
                     set c to content of m
-                    if (length of c) > 300 then
-                        set c to (text 1 thru 300 of c) & "..."
+                    if (length of c) > 250 then
+                        set c to (text 1 thru 250 of c) & "..."
                     end if
                     set outText to outText & snd & "<|SEP|>" & s & "<|SEP|>" & d & "<|SEP|>" & c & "<|MSG|>"
                 end repeat
@@ -100,7 +101,7 @@ class MailAutomation:
         end tell
         """
         try:
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=8)
             output = res.stdout.strip()
             if output == "NO_MESSAGES":
                 return {"ok": True, "emails": [], "message": "Your inbox is currently empty."}

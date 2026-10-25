@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import json
 import re
 import sys
@@ -36,6 +37,7 @@ try:
         get_cortex_status,
         get_offline_knowledge,
     )
+    from backend.core.direct_answers import resolve_direct_answer, clean_search_response
     from backend.integrations.search import search_web
     from backend.agent.policy import PolicyEngine
     from backend.tools.registry import ToolRegistry
@@ -43,6 +45,7 @@ try:
     from backend.agent.planner import AutonomousPlanner
     from backend.agent.email_engine import ProfessionalEmailEngine, EmailDraft, sanitize_untrusted_email_content
     from backend.agent.recipient_resolver import RecipientResolver, ResolutionResult, ResolvedRecipient
+    from backend.core.adaptive_tone import detect_adaptive_tone, apply_tone_to_prompt
 except ImportError:
     from capabilities import DeviceAutomation, classify_command
     from persistence import EncryptedMemoryStore
@@ -72,6 +75,7 @@ except ImportError:
         get_cortex_status,
         get_offline_knowledge,
     )
+    from core.direct_answers import resolve_direct_answer, clean_search_response
     from integrations.search import search_web
     from policy import PolicyEngine
     from tools.registry import ToolRegistry
@@ -79,6 +83,11 @@ except ImportError:
     from planner import AutonomousPlanner
     from email_engine import ProfessionalEmailEngine, EmailDraft, sanitize_untrusted_email_content
     from recipient_resolver import RecipientResolver, ResolutionResult, ResolvedRecipient
+    try:
+        from core.adaptive_tone import detect_adaptive_tone, apply_tone_to_prompt
+    except ImportError:
+        detect_adaptive_tone = None
+        apply_tone_to_prompt = None
 
 try:
     import google.generativeai as genai
@@ -89,12 +98,13 @@ except ImportError:
 SYSTEM_PROMPT = """You are Cortex, a powerful AI desktop assistant and knowledge engine.
 You understand natural language commands for both computer control AND general questions.
 
-ANSWERING STYLE — BE LIKE GOOGLE:
-- Answer DIRECTLY. Lead with the fact/answer immediately — no preamble, no "Great question!", no "Sure!"
-- Be concise. 1-3 sentences for simple facts. Use bullet points only if listing multiple items.
-- For questions: give the answer first, then a brief explanation if needed.
-- For greetings: be warm but brief.
-- NEVER pad answers with filler phrases like "I hope that helps!", "Feel free to ask!", "As an AI..."
+ANSWERING STYLE — MASTER LLM STANDARD (Rivaling ChatGPT-4o, Claude 3.5 Sonnet, and Gemini Pro):
+- Deliver high-caliber, insightful, accurate, and comprehensive answers.
+- Lead with the core insight or answer immediately without fluff or sycophancy (no "Certainly!", "Great question!").
+- For complex, conceptual, technical, or creative queries: provide deep explanations, step-by-step breakdowns, structured lists, and clean code examples where applicable.
+- For simple factual queries: provide direct, crisp precision.
+- Use clean Markdown: bold key terms, use bullet points for lists, and code blocks with syntax highlighting.
+- NEVER use generic filler like "I hope that helps!", "Feel free to ask more!", "As an AI language model..."
 - MULTILINGUAL MANDATE: If user inputs in Kannada, Hindi, Tamil, or Telugu, ANY conversational output or "answer" field MUST be written strictly in that same language and native script, NEVER in English.
 
 App/Device Classification Rules (be VERY precise):
@@ -196,6 +206,7 @@ class CortexOrchestrator:
             memory_store=self.memory,
         )
         self.gemini_model = None
+        self.gemini_cooldown_until: float = 0.0
 
         if use_gemini is False:
             self.use_gemini = False
@@ -247,8 +258,40 @@ class CortexOrchestrator:
         except Exception as e:
             print(f"[cortex] Failed to save conversation history: {e}", file=sys.stderr)
 
-    def _analyze_intent(self, message: str, lang_code: str = "en") -> dict[str, Any]:
+    def _create_gemini_model(self, system_instruction: str | None = None) -> Any:
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        candidates = [model_name, "gemini-3.5-flash", "gemini-flash-latest"]
+        for name in candidates:
+            try:
+                if system_instruction:
+                    return genai.GenerativeModel(name, system_instruction=system_instruction)
+                return genai.GenerativeModel(name)
+            except Exception:
+                continue
+        if system_instruction:
+            return genai.GenerativeModel("gemini-3.5-flash", system_instruction=system_instruction)
+        return genai.GenerativeModel("gemini-3.5-flash")
+
+    def _is_gemini_available(self) -> bool:
         if not self.use_gemini:
+            return False
+        if time.time() < getattr(self, "gemini_cooldown_until", 0.0):
+            return False
+        return True
+
+    def _handle_gemini_error(self, exc: Exception, context: str = "") -> None:
+        err_str = str(exc).lower()
+        if "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str or "rate limit" in err_str:
+            self.gemini_cooldown_until = time.time() + 300.0  # 5-minute cooldown
+            print(f"[cortex] Gemini quota/rate limit reached in {context}. Activated 5m circuit breaker for instant fallbacks: {exc}", file=sys.stderr)
+        elif "504" in err_str or "deadline expired" in err_str or "timed out" in err_str:
+            self.gemini_cooldown_until = time.time() + 60.0  # 1-minute cooldown
+            print(f"[cortex] Gemini API timed out in {context}. Cooldown 1m: {exc}", file=sys.stderr)
+        else:
+            print(f"[cortex] Gemini error in {context}: {exc}", file=sys.stderr)
+
+    def _analyze_intent(self, message: str, lang_code: str = "en") -> dict[str, Any]:
+        if not self._is_gemini_available():
             return self._analyze_intent_fallback(message)
 
         try:
@@ -258,7 +301,7 @@ class CortexOrchestrator:
             if lang_instr:
                 system = SYSTEM_PROMPT + f"\n\nLanguage Directive:\n{lang_instr}"
 
-            model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system)
+            model = self._create_gemini_model(system_instruction=system)
             
             # Construct standard chat history context for Gemini
             chat_contents = []
@@ -270,7 +313,8 @@ class CortexOrchestrator:
 
             response = model.generate_content(
                 chat_contents,
-                generation_config={"response_mime_type": "application/json"}
+                generation_config={"response_mime_type": "application/json"},
+                request_options={"timeout": 6.0}
             )
             data = json.loads(response.text)
 
@@ -299,7 +343,7 @@ class CortexOrchestrator:
                 "answer": data.get("answer")
             }
         except Exception as exc:
-            print(f"[cortex] Gemini analysis failed: {exc}. Falling back to regex parser.", file=sys.stderr)
+            self._handle_gemini_error(exc, context="intent analysis")
             return self._analyze_intent_fallback(message)
 
     def _analyze_intent_fallback(self, message: str) -> dict[str, Any]:
@@ -394,72 +438,72 @@ class CortexOrchestrator:
                         )
                     )
 
-                if is_cancel:
-                    task_id = pending["task_id"]
-                    self.pending_action = None
-                    cancelled_task = self.approve(task_id, approved=False)
-                    return {
-                        "task": cancelled_task,
-                        "message": localize("action_cancelled", p_lang),
-                    }
-                elif is_show_draft:
-                    task_id = pending["task_id"]
-                    task = self.tasks[task_id]
-                    draft = pending.get("draft")
-                    if not draft:
-                        draft = EmailDraft(recipient=pending["recipient"], subject=pending["subject"], body=pending.get("formatted_body") or pending["body"], sender_account=pending.get("sender_account", ""))
-                    response = self._format_approval_card(draft, lang_code=p_lang)
-                    return {"task": task.to_dict(), "message": response}
-                elif is_edit or (" " in msg_lower and not is_confirm and not any(kw in msg_lower for kw in ("open ", "close ", "screenshot", "calculate", "find "))):
-                    task_id = pending["task_id"]
-                    task = self.tasks[task_id]
-                    draft = pending.get("draft")
-                    if not draft:
-                        draft = EmailDraft(recipient=pending["recipient"], subject=pending["subject"], body=pending.get("formatted_body") or pending["body"], sender_account=pending.get("sender_account", ""))
-                    updated_draft = self.email_engine.update_draft_with_edit(draft, message)
-                    pending["subject"] = updated_draft.subject
-                    pending["body"] = updated_draft.body
-                    pending["draft"] = updated_draft
-                    pending["sender_account"] = updated_draft.sender_account
-                    pending["attachments"] = updated_draft.attachments
-                    task.params["subject"] = updated_draft.subject
-                    task.params["body"] = updated_draft.body
-                    task.params["formatted_body"] = updated_draft.body
-                    task.params["sender_account"] = updated_draft.sender_account
-                    task.params["attachments"] = updated_draft.attachments
-                    task.params["approval_hash"] = updated_draft.approval_hash
-                    task.status = TaskStatus.WAITING_APPROVAL
-                    task.add_event("draft_edited", f"Draft updated: {message}")
+                    if is_cancel:
+                        task_id = pending["task_id"]
+                        self.pending_action = None
+                        cancelled_task = self.approve(task_id, approved=False)
+                        return {
+                            "task": cancelled_task,
+                            "message": localize("action_cancelled", p_lang),
+                        }
+                    elif is_show_draft:
+                        task_id = pending["task_id"]
+                        task = self.tasks[task_id]
+                        draft = pending.get("draft")
+                        if not draft:
+                            draft = EmailDraft(recipient=pending["recipient"], subject=pending["subject"], body=pending.get("formatted_body") or pending["body"], sender_account=pending.get("sender_account", ""))
+                        response = self._format_approval_card(draft, lang_code=p_lang)
+                        return {"task": task.to_dict(), "message": response}
+                    elif is_edit or (" " in msg_lower and not is_confirm and not any(kw in msg_lower for kw in ("open ", "close ", "screenshot", "calculate", "find "))):
+                        task_id = pending["task_id"]
+                        task = self.tasks[task_id]
+                        draft = pending.get("draft")
+                        if not draft:
+                            draft = EmailDraft(recipient=pending["recipient"], subject=pending["subject"], body=pending.get("formatted_body") or pending["body"], sender_account=pending.get("sender_account", ""))
+                        updated_draft = self.email_engine.update_draft_with_edit(draft, message)
+                        pending["subject"] = updated_draft.subject
+                        pending["body"] = updated_draft.body
+                        pending["draft"] = updated_draft
+                        pending["sender_account"] = updated_draft.sender_account
+                        pending["attachments"] = updated_draft.attachments
+                        task.params["subject"] = updated_draft.subject
+                        task.params["body"] = updated_draft.body
+                        task.params["formatted_body"] = updated_draft.body
+                        task.params["sender_account"] = updated_draft.sender_account
+                        task.params["attachments"] = updated_draft.attachments
+                        task.params["approval_hash"] = updated_draft.approval_hash
+                        task.status = TaskStatus.WAITING_APPROVAL
+                        task.add_event("draft_edited", f"Draft updated: {message}")
 
-                    draft_saved = True
-                    save_error = ""
-                    try:
-                        res = self.automation.execute(TaskCommand.DRAFT_MAIL, {"recipient": updated_draft.recipient, "subject": updated_draft.subject, "body": updated_draft.body, "account": updated_draft.sender_account})
-                        if hasattr(res, "ok") and not res.ok:
+                        draft_saved = True
+                        save_error = ""
+                        try:
+                            res = self.automation.execute(TaskCommand.DRAFT_MAIL, {"recipient": updated_draft.recipient, "subject": updated_draft.subject, "body": updated_draft.body, "account": updated_draft.sender_account})
+                            if hasattr(res, "ok") and not res.ok:
+                                draft_saved = False
+                                save_error = res.message
+                        except Exception as e:
                             draft_saved = False
-                            save_error = res.message
-                    except Exception as e:
-                        draft_saved = False
-                        save_error = str(e)
+                            save_error = str(e)
 
-                    response = self._format_approval_card(updated_draft, lang_code=p_lang, draft_saved=draft_saved, save_error=save_error)
-                    return {"task": task.to_dict(), "message": response}
-                elif is_confirm:
-                    task_id = pending["task_id"]
-                    recipient = pending["recipient"]
-                    self.pending_action = None
-                    approved_task = self.approve(task_id, approved=True)
-                    if approved_task.get("status") in (TaskStatus.FAILED.value, TaskStatus.FAILED, "failed"):
+                        response = self._format_approval_card(updated_draft, lang_code=p_lang, draft_saved=draft_saved, save_error=save_error)
+                        return {"task": task.to_dict(), "message": response}
+                    elif is_confirm:
+                        task_id = pending["task_id"]
+                        recipient = pending["recipient"]
+                        self.pending_action = None
+                        approved_task = self.approve(task_id, approved=True)
+                        if approved_task.get("status") in (TaskStatus.FAILED.value, TaskStatus.FAILED, "failed"):
+                            return {
+                                "task": approved_task,
+                                "message": approved_task.get("error") or "Failed to send email.",
+                            }
                         return {
                             "task": approved_task,
-                            "message": approved_task.get("error") or "Failed to send email.",
+                            "message": localize("email_sent", p_lang, recipient=recipient),
                         }
-                    return {
-                        "task": approved_task,
-                        "message": localize("email_sent", p_lang, recipient=recipient),
-                    }
-                else:
-                    self.pending_action = None
+                    else:
+                        self.pending_action = None
 
             elif pending.get("type") == "email_draft" and pending.get("step") == "waiting_for_recipient_clarification":
                 user_answer = message.strip()
@@ -483,7 +527,8 @@ class CortexOrchestrator:
 
                 if resolution.status == "resolved" and resolution.recipient:
                     resolved = resolution.recipient
-                    rec_display = f"{resolved.name} <{resolved.email}>" if resolved.name and resolved.name != resolved.email else resolved.email
+                    target_name = raw_recipient if raw_recipient and not re.search(r"@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", raw_recipient) else resolved.name
+                    rec_display = f"{target_name} <{resolved.email}>" if target_name and target_name.lower() != resolved.email.lower() else resolved.email
                     if not body:
                         self.pending_action = {
                             "type": "email_draft",
@@ -1310,31 +1355,50 @@ class CortexOrchestrator:
     def memories(self) -> list[dict[str, Any]]:
         return self.memory.list()
 
+    def delete_memory(self, memory_id: str) -> bool:
+        return self.memory.delete(memory_id)
+
+    def clear_memories(self, kind: str | None = None) -> int:
+        return self.memory.clear(kind=kind)
+
+    def clear_history(self) -> None:
+        self.history = []
+        try:
+            self.memory.delete("conversation_history")
+        except Exception:
+            pass
+
     def _summarize_search(self, query: str, results: list[dict[str, str]]) -> str:
-        if self.use_gemini and self.api_key:
+        # Check direct answer first
+        direct = resolve_direct_answer(query)
+        if direct:
+            return direct
+
+        if self._is_gemini_available():
             try:
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                model = self._create_gemini_model()
                 formatted = "\n\n".join([
-                    f"Title: {r['title']}\nContent: {r['body']}"
+                    f"Title: {r['title']}\nContent: {clean_search_response(r['body'])}"
                     for r in results if r.get("body")
                 ])
                 prompt = (
-                    f"You are Cortex, a direct AI assistant like Google.\n"
-                    f"Answer the question below using ONLY the provided facts. Be concise and direct.\n"
-                    f"Rules: Lead with the answer. No preamble. No 'I hope this helps'. Use bullet points for lists.\n\n"
+                    f"You are Cortex, a direct AI assistant like Google, Claude, and ChatGPT.\n"
+                    f"Answer the question below using ONLY the provided facts. Be concise, direct, and well-structured.\n"
+                    f"Rules: Lead with the answer. No preamble. No 'I hope this helps'. Use markdown formatting and bullet points for lists.\n\n"
                     f"Question: {query}\n\n"
                     f"Facts:\n{formatted}"
                 )
-                response = model.generate_content(prompt)
+                response = model.generate_content(prompt, request_options={"timeout": 6.0})
                 if response and response.text:
-                    return response.text.strip()
+                    return clean_search_response(response.text.strip())
             except Exception as e:
-                print(f"[cortex] Failed to summarize search with Gemini: {e}", file=sys.stderr)
+                self._handle_gemini_error(e, context="summarize search")
 
-        # Offline fallback: use raw snippets directly
-        bodies = [r.get("body", "").strip() for r in results if r.get("body", "").strip()]
-        if bodies:
-            return bodies[0] if len(bodies) == 1 else bodies[0] + "\n\n" + bodies[1]
+        # Offline fallback: clean snippets thoroughly (unescape HTML entities, strip tags)
+        cleaned_bodies = [clean_search_response(r.get("body", "")) for r in results if r.get("body")]
+        cleaned_bodies = [b for b in cleaned_bodies if b]
+        if cleaned_bodies:
+            return cleaned_bodies[0] if len(cleaned_bodies) == 1 else cleaned_bodies[0] + "\n\n" + cleaned_bodies[1]
 
         return f"No results found for '{query}'. Try rephrasing your question."
 
@@ -1355,12 +1419,12 @@ class CortexOrchestrator:
             sanitized_emails.append(se)
         emails = sanitized_emails
 
-        if not self.use_gemini:
+        if not self._is_gemini_available():
             lines = [f"• From {e.get('sender', 'Unknown')}: {e.get('subject', 'No subject')} ({e.get('date', 'Recent')})" for e in emails]
             return f"You have {len(emails)} recent emails:\n" + "\n".join(lines)
 
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = self._create_gemini_model()
             formatted = "\n\n".join([
                 f"From: {e.get('sender')}\nSubject: {e.get('subject')}\nDate: {e.get('date')}\nSnippet: {e.get('snippet')}"
                 for e in emails
@@ -1371,16 +1435,110 @@ class CortexOrchestrator:
                 f"Highlight who they are from, key topics, and any action items, perfect for speaking aloud.\n\n"
                 f"Emails:\n{formatted}"
             )
-            response = model.generate_content(prompt)
+            response = model.generate_content(prompt, request_options={"timeout": 6.0})
             return response.text.strip()
         except Exception as e:
-            print(f"[cortex] Failed to summarize emails: {e}", file=sys.stderr)
+            self._handle_gemini_error(e, context="summarize emails")
             lines = [f"• From {e.get('sender', 'Unknown')}: {e.get('subject', 'No subject')}" for e in emails]
             return f"You have {len(emails)} recent emails:\n" + "\n".join(lines)
+
+    def _summarize_conversation_history(self, lang_code: str = "en") -> str:
+        """Summarizes past dialogue turns without fabricating details."""
+        if not self.history:
+            return "Our conversation just started — there are no previous turns to summarize yet."
+
+        history_lines = []
+        for item in self.history[-12:]:
+            role = "User" if item.get("role") == "user" else "Cortex"
+            parts = item.get("parts", [])
+            text = " ".join(parts) if isinstance(parts, list) else str(parts)
+            history_lines.append(f"{role}: {text}")
+
+        history_text = "\n".join(history_lines)
+
+        if not self._is_gemini_available():
+            return f"Here is a recap of our recent conversation:\n\n{history_text}"
+
+        try:
+            model = self._create_gemini_model()
+            lang_instr = language_instruction(lang_code)
+            prompt = (
+                "You are Cortex, summarizing the following dialogue between the user and yourself.\n"
+                "Provide a crisp, objective summary covering:\n"
+                "1. Topics discussed\n"
+                "2. Decisions reached\n"
+                "3. Open action items or questions\n\n"
+                f"{lang_instr}\n\n"
+                f"Conversation:\n{history_text}"
+            )
+            resp = model.generate_content(prompt, request_options={"timeout": 6.0})
+            if resp and resp.text:
+                return resp.text.strip()
+        except Exception as e:
+            self._handle_gemini_error(e, context="summarize conversation")
+
+        return f"Recent conversation overview:\n\n{history_text}"
+
+    def _summarize_document(self, text_or_path: str, lang_code: str = "en") -> str:
+        """Summarizes a provided document text or local file safely."""
+        content = text_or_path.strip()
+        # If it looks like a local file path, attempt safe read
+        if (content.startswith("/") or content.startswith("./") or content.endswith((".txt", ".md", ".json", ".log"))) and len(content) < 300:
+            target_path = Path(content).expanduser().resolve()
+            if target_path.is_file():
+                try:
+                    content = target_path.read_text(encoding="utf-8", errors="replace")[:50000]
+                except Exception as e:
+                    return f"Could not read document at {target_path}: {e}"
+            else:
+                return f"Document file not found: {content}"
+
+        if not content:
+            return "No document content provided to summarize."
+
+        snippet = content[:25000]
+
+        if not self._is_gemini_available():
+            preview = snippet[:500] + ("..." if len(snippet) > 500 else "")
+            return f"Document Summary (Local Preview):\n\nLength: {len(snippet)} characters.\n\n{preview}"
+
+        try:
+            model = self._create_gemini_model()
+            lang_instr = language_instruction(lang_code)
+            prompt = (
+                "You are Cortex, an expert research assistant.\n"
+                "Summarize the following document accurately. Do not invent any facts not present in the text.\n"
+                "Highlight:\n"
+                "- Core thesis or executive summary\n"
+                "- Key points and findings\n"
+                "- Concrete action items or deadlines\n\n"
+                f"{lang_instr}\n\n"
+                f"Document Content:\n{snippet}"
+            )
+            resp = model.generate_content(prompt, request_options={"timeout": 7.0})
+            if resp and resp.text:
+                return resp.text.strip()
+        except Exception as e:
+            self._handle_gemini_error(e, context="summarize document")
+            return f"Document summary preview ({len(snippet)} chars):\n\n" + snippet[:400]
 
     def _answer_general_question(self, query: str, lang_code: str = "en") -> str:
         """Google-style direct answering: fact first, explanation after."""
         q_lower = query.lower().strip()
+
+        # Check for conversation recap / summary requests
+        if re.search(r"\b(?:summarize|recap|summary of)\s+(?:our\s+)?(?:conversation|chat|discussion|talk)\b", q_lower):
+            return self._summarize_conversation_history(lang_code)
+
+        # Check for document summary requests
+        doc_match = re.search(r"\b(?:summarize\s+(?:document|file|text|this))\s+(.+)", query, flags=re.IGNORECASE)
+        if doc_match:
+            return self._summarize_document(doc_match.group(1).strip(), lang_code)
+
+        # 0. Smart Direct Answers (Real-time world time, dates, system clock, calculations)
+        direct_ans = resolve_direct_answer(query, lang_code)
+        if direct_ans:
+            return direct_ans
 
         # 1. Curated offline knowledge base (Instant fact answering for common queries in Indic & English)
         offline_fact = get_offline_knowledge(query, lang_code)
@@ -1390,14 +1548,18 @@ class CortexOrchestrator:
         # 2. Greeting / Identity / Status shortcuts in target language
         greeting_words = {
             "hi", "hello", "hey", "namaste", "vanakkam", "namaskara", "namaskaram",
+            "helo", "hello cortex", "hi cortex", "hey cortex", "namaskara cortex", "namaste cortex",
             "ನಮಸ್ಕಾರ", "ಹಲೋ", "ನಮಸ್ತೆ", "ಶುಭೋದಯ", "नमस्ते", "नमस्कार", "प्रणाम", "வணக்கம்", "నమస్కారం"
         }
         is_greeting = (
             q_lower in greeting_words
-            or (any(q_lower.startswith(w) for w in ("hi ", "hello", "hey ", "greetings")) and len(q_lower.split()) <= 4)
+            or (any(q_lower.startswith(w) for w in ("hi ", "hello", "hey ", "greetings", "namaste", "namaskara", "vanakkam", "namaskaram")) and len(q_lower.split()) <= 4)
         )
         is_status = any(p in q_lower for p in (
-            "how are you", "ಹೇಗಿದ್ದೀರಿ", "ಹೇಗಿದ್ದೀರಾ", "आप कैसे हैं", "कैसे हो", "क्या हाल है", "எப்படி இருக்கிறீர்கள்", "ఎలా ఉన్నారు", "బాగున్నారా"
+            "how are you", "hegidira", "hegiddira", "hegidiya", "chennagidira",
+            "ಹೇಗಿದ್ದೀರಿ", "ಹೇಗಿದ್ದೀರಾ", "ಚೆನ್ನಾಗಿದ್ದೀರಾ", "kaisa hai", "kaise ho", "kya haal", "haal chal",
+            "आप कैसे हैं", "कैसे हो", "क्या हाल है", "हाल चाल", "eppadi irukinga", "epdi irukinga", "eppadi irukka",
+            "எப்படி இருக்கிறீர்கள்", "எப்படி இருக்கீங்க", "ela unnaru", "bagunnara", "bagunara", "ఎలా ఉన్నారు", "బాగున్నారా"
         ))
         is_identity = any(p in q_lower for p in (
             "who are you", "what can you do", "ನಿಮ್ಮ ಹೆಸರೇನು", "ನೀವು ಯಾರು", "ನೀವೇನು ಮಾಡಬಲ್ಲಿರಿ", "ಏನು ಮಾಡಬಹುದು",
@@ -1409,35 +1571,41 @@ class CortexOrchestrator:
         if is_greeting or is_identity:
             return get_cortex_identity(lang_code)
 
-        # 3. Try Gemini — Direct answer
-        if self.use_gemini and self.api_key:
+        # 3. Try Gemini — Direct answer (skip if unavailable or in cooldown)
+        if self._is_gemini_available():
             try:
                 lang_instr = language_instruction(lang_code)
                 system = (
-                    "You are Cortex, a powerful AI assistant. Answer like Google — direct, concise, factual.\n"
-                    "Rules:\n"
-                    "- Lead with the answer immediately. No preamble like 'Great question!' or 'Sure!'.\n"
-                    "- Simple facts: 1-2 sentences max.\n"
-                    "- Lists/steps: use bullet points.\n"
-                    "- Technical questions: include code if relevant.\n"
-                    "- NEVER end with 'I hope that helps!' or 'Feel free to ask more!'.\n"
-                    "- Match the user's language. If they ask in Hindi, answer in Hindi. Same for Kannada, Tamil, Telugu.\n"
-                    "- Never say 'As an AI...' or 'I'm just an AI'.\n"
-                    "- You CAN answer any factual question, definition, how-to, news, math, code, science, etc.\n"
+                    "You are Cortex, an elite AI companion and assistant powered by Gemini, rivaling ChatGPT-4o, Alexa, and Claude.\n"
+                    "Tone and Persona: You are a warm, brilliant, articulate friend who knows multiple languages fluently.\n"
+                    "Your objective is to provide the absolute best, most comprehensive, accurate, and helpful answers to any question or task.\n\n"
+                    "Guidelines:\n"
+                    "- Tone: Warm, engaging, conversational, highly intelligent, articulate, and friendly — just like speaking with a knowledgeable close friend or ChatGPT Voice/Alexa.\n"
+                    "- Structure: Lead directly with the core insight or solution. Use clear markdown formatting, bold highlights, bullet points, and numbered steps.\n"
+                    "- Depth & Completeness: For deep, conceptual, technical, programming, writing, science, math, or analytical questions, provide thorough, master-level explanations with full code or detailed examples.\n"
+                    "- Precision: For quick facts or simple definitions, be crisp and exact.\n"
+                    "- Code Quality: Write production-ready, clean, modern code with explanatory syntax highlighting.\n"
+                    "- Multilingual: Flawlessly match the user's language (English, Kannada, Hindi, Tamil, Telugu, etc.) with natural native phrasing, warmth, and colloquial idioms.\n"
+                    "- Zero Fluff: Never say 'As an AI language model...', 'I hope this helps!', or pad answers with filler.\n"
                 )
                 if lang_instr:
                     system += f"\n{lang_instr}\n"
 
-                model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system)
+                # Apply situational adaptive tone
+                if detect_adaptive_tone and apply_tone_to_prompt:
+                    tone_ctx = detect_adaptive_tone(query)
+                    system = apply_tone_to_prompt(system, tone_ctx)
+
+                model = self._create_gemini_model(system_instruction=system)
 
                 chat_contents = list(self.history)
                 chat_contents.append({"role": "user", "parts": [query]})
 
-                resp = model.generate_content(chat_contents)
+                resp = model.generate_content(chat_contents, request_options={"timeout": 7.0})
                 if resp and resp.text:
                     return resp.text.strip()
             except Exception as e:
-                print(f"[cortex] Gemini API question error: {e}", file=sys.stderr)
+                self._handle_gemini_error(e, context="question answering")
 
         # 4. Web search fallback for factual queries
         try:
@@ -1457,6 +1625,14 @@ class CortexOrchestrator:
         # ── General Conversation / Knowledge Answering ─────────────────
         if task.command in (TaskCommand.ASK_QUESTION, TaskCommand.UNKNOWN):
             lang = str(task.language.value if task.language else "en")
+            # 0. Smart direct answers check
+            direct_ans = resolve_direct_answer(task.intent, lang)
+            if direct_ans:
+                task.status = TaskStatus.COMPLETED
+                task.result = direct_ans
+                task.add_event("completed", "Resolved via direct answer engine.")
+                return
+
             # Prefer Gemini-provided answer from intent analysis, but always verify it's non-empty
             answer = (task.params.get("answer") or "").strip()
             if not answer:
@@ -1479,18 +1655,19 @@ class CortexOrchestrator:
                 task.result = answer
                 task.add_event("completed", "Web search results summarized.")
             else:
-                if self.use_gemini:
+                if self._is_gemini_available():
                     try:
-                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        model = self._create_gemini_model()
                         resp = model.generate_content(
-                            f"You are Cortex, a warm, caring, and thoughtful AI friend. Answer this query in a natural, friendly, conversational way (2-3 sentences):\n{query}"
+                            f"You are Cortex, a warm, caring, and thoughtful AI friend. Answer this query in a natural, friendly, conversational way (2-3 sentences):\n{query}",
+                            request_options={"timeout": 6.0}
                         )
                         task.status = TaskStatus.COMPLETED
                         task.result = resp.text.strip()
                         task.add_event("completed", "Answered using assistant knowledge.")
                         return
                     except Exception as e:
-                        print(f"[cortex] Knowledge fallback failed: {e}", file=sys.stderr)
+                        self._handle_gemini_error(e, context="web search fallback")
                     task.status = TaskStatus.FAILED
                     task.error = "No search results found."
                     task.add_event("failed", "Web search returned no results.")

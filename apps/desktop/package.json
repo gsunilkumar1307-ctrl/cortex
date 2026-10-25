@@ -5,6 +5,7 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
+    "start": "bash ../../scripts/start-cortex.sh",
     "dev": "vite --host 127.0.0.1",
     "electron": "electron .",
     "build": "vite build"

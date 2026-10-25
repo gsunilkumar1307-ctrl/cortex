@@ -44,7 +44,39 @@ class EncryptedMemoryStore:
             row = conn.execute("SELECT ciphertext FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if not row:
             return None
-        return json.loads(self.fernet.decrypt(row[0]).decode())
+        try:
+            return json.loads(self.fernet.decrypt(row[0]).decode())
+        except Exception:
+            return None
+
+    def update(self, memory_id: str, payload: dict[str, Any]) -> bool:
+        """Update payload of an existing memory."""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT kind FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if not row:
+                return False
+            raw = json.dumps(payload, sort_keys=True).encode()
+            ciphertext = self.fernet.encrypt(raw)
+            conn.execute(
+                "UPDATE memories SET ciphertext = ? WHERE id = ?",
+                (ciphertext, memory_id),
+            )
+            return True
+
+    def delete(self, memory_id: str) -> bool:
+        """Delete an individual memory by id."""
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            return cur.rowcount > 0
+
+    def clear(self, kind: str | None = None) -> int:
+        """Clear memories, optionally filtered by kind."""
+        with sqlite3.connect(self.db_path) as conn:
+            if kind:
+                cur = conn.execute("DELETE FROM memories WHERE kind = ?", (kind,))
+            else:
+                cur = conn.execute("DELETE FROM memories")
+            return cur.rowcount
 
     def list(self, kind: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT id, kind, ciphertext, created_at FROM memories"
@@ -55,12 +87,16 @@ class EncryptedMemoryStore:
         query += " ORDER BY created_at DESC"
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(query, params).fetchall()
-        return [
-            {
-                "id": row[0],
-                "kind": row[1],
-                "payload": json.loads(self.fernet.decrypt(row[2]).decode()),
-                "createdAt": row[3],
-            }
-            for row in rows
-        ]
+        items = []
+        for row in rows:
+            try:
+                decrypted = json.loads(self.fernet.decrypt(row[2]).decode())
+                items.append({
+                    "id": row[0],
+                    "kind": row[1],
+                    "payload": decrypted,
+                    "createdAt": row[3],
+                })
+            except Exception:
+                continue
+        return items

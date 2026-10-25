@@ -25,8 +25,11 @@ _TAMIL_RANGE    = re.compile(r"[\u0B80-\u0BFF]")   # தமிழ்
 _TELUGU_RANGE   = re.compile(r"[\u0C00-\u0C7F]")   # తెలుగు
 
 # ── Romanized (transliterated) keyword sets ──────────────────────────────────
-# Common words/phrases a person ONLY uses when speaking that specific language
+# Common words/phrases a person uses when speaking that specific language in Latin script
 _ROMAN_KN = {
+    # greetings & friend terms
+    "namaskara", "namaskaram", "hegidira", "hegiddira", "hegidiya", "chennagidira",
+    "samachara", "snehitare", "geleyane", "guru", "macha", "kannada",
     # verbs / fillers
     "maadu", "maadi", "madhu", "madko", "madkond", "heli", "helri", "helappa",
     "beda", "bidu", "bidappa", "illa", "ide", "ide-ya", "iro", "irli", "iri",
@@ -34,14 +37,18 @@ _ROMAN_KN = {
     "naan", "naanu", "nimage", "ninge", "nimge", "avru", "avaru", "avana",
     "hogi", "hodre", "banni", "band", "banda", "barli", "baar", "baara",
     "sari", "sari-ya", "thumba", "thumba-na", "chennag", "channag", "channagi",
-    "ondu", "eradu", "mooru", "naalk", "aidu", "aaru",
+    "ondu", "eradu", "mooru", "naalk", "aidu", "aaru", "nodi", "nodi-pa",
+    "oota", "aaytha", "aaytu", "kelsa", "dayavittu", "dhanyavadagalu", "bega",
     # everyday phrases
     "yeshtu", "eshtu", "henge", "hengirutte", "hengide", "hengaagutte",
-    "gottilla", "gottide", "bittogala", "bitogala", "bitogale",
+    "gottilla", "gottide", "bittogala", "bitogala", "bitogale", "nodappa",
     "nim mail", "nan mail", "mail check", "inbox nod", "mail odhu",
 }
 
 _ROMAN_HI = {
+    # greetings & friend terms
+    "namaste", "namaskar", "pranam", "kaisa", "kaise", "kaisi", "haal", "chal",
+    "dost", "yaar", "bhai", "bhaiya", "shukriya", "dhanyawad", "badhiya",
     # pronouns / verbs / fillers
     "karo", "karna", "karta", "karti", "kar", "mujhe", "mujhse", "mera",
     "mere", "meri", "hum", "hume", "humara", "aap", "aapka", "aapki",
@@ -52,28 +59,34 @@ _ROMAN_HI = {
     "dikha", "dikhao", "kholo", "band", "bhejo", "bhej", "likh", "likho",
     "seedha", "suno", "sun", "bol", "bolo", "dekh", "dekho", "ruk", "ruko",
     "jaldi", "dhire", "accha", "theek", "bilkul", "zaroor", "samajh",
-    "samajho", "mail padh", "mail bhejo", "inbox dekho",
+    "samajho", "mail padh", "mail bhejo", "inbox dekho", "kripya", "alvida",
 }
 
 _ROMAN_TA = {
+    # greetings & friend terms
+    "vanakkam", "eppadi", "irukinga", "irukeenga", "epdi", "nandri", "nanba",
+    "thozha", "thalaiva", "machan", "vishayam",
     # pronouns / verbs
     "pannunga", "pannnu", "pannu", "paarungal", "paarunga", "paaru",
-    "solunga", "sollu", "solren", "solven", "pesuren", "pesuven",
-    "iruku", "irukku", "illa", "illai", "enna", "yenna", "eppadi",
-    "evlo", "enna", "naan", "naanga", "neenga", "avan", "aval", "avanga",
+    "solunga", "sollu", "sollunga", "solren", "solven", "pesuren", "pesuven",
+    "iruku", "irukku", "illa", "illai", "enna", "yenna",
+    "evlo", "naan", "naanga", "neenga", "avan", "aval", "avanga",
     "vandhaachu", "pogaren", "vaarunga", "vaanga", "vaaru",
     "romba", "konjam", "nalla", "kettalama", "seri", "mudiyuma",
     "mail paaru", "inbox paaru", "mail anuppu", "mail anupu",
 }
 
 _ROMAN_TE = {
+    # greetings & friend terms
+    "namaskaram", "ela", "elaa", "unnaru", "bagunnara", "dhanyavadalu",
+    "mitrama", "mithrama", "bhayya", "sangathi", "ippudu",
     # pronouns / verbs / fillers
     "cheyyi", "cheyandu", "cheyagalavu", "cheseyyi", "cheyyandi",
     "cheppandi", "cheppu", "cheppu-ga", "chusta", "chustanu",
     "ledu", "undi", "unte", "avutundi", "avutadha", "avadhu",
     "nenu", "meeru", "meeru-ku", "vaadu", "vaadiki", "vaatiki",
-    "ela", "elaa", "emiti", "emiti-ra", "evaru", "enduku",
-    "chala", "kொంచem", "manchidi", "manchiga", "okay-ga",
+    "emiti", "emiti-ra", "evaru", "enduku",
+    "chala", "konchem", "manchidi", "manchiga", "okay-ga",
     "mail cheyyi", "mail padandi", "inbox chudandi", "inbox chuu",
 }
 
@@ -180,34 +193,36 @@ def detect_language(text: str, gemini_model=None) -> str:
 
 # ── Language → instruction string injected into Cortex system prompt ─────────
 _LANG_INSTRUCTION: dict[str, str] = {
-    "en": "",  # English is the default; no extra instruction needed
+    "en": "",  # English is default; friendly persona is defined in base prompt
     "kn": (
-        "The user is speaking Kannada. "
-        "MANDATORY: You MUST respond warmly and naturally in Kannada. "
-        "All conversational text and the 'answer' field MUST be written in Kannada script, NOT English. "
-        "You may mix English technical terms (app names, URLs, email addresses) naturally. "
-        "Use simple, friendly, conversational Kannada — not overly formal."
+        "The user is speaking Kannada (or Kanglish). "
+        "MANDATORY: You MUST respond warmly, fluently, and naturally in Kannada, just like a close, smart friend or Alexa/ChatGPT. "
+        "Use natural, idiomatic, spoken Kannada (e.g., 'ಖಂಡಿತ ಸ್ನೇಹಿತರೇ', 'ನಾನು ತುಂಬಾ ಚೆನ್ನಾಗಿದ್ದೇನೆ', 'ಹೇಳಿ, ನಿಮಗಾಗಿ ಏನು ಮಾಡಲಿ?'). "
+        "All conversational responses and the 'answer' field MUST be in natural Kannada script. "
+        "Mix common English technical terms (email, app, browser, search) naturally where appropriate. "
+        "Never sound robotic, stiff, or bureaucratic. Be warm, attentive, and helpful."
     ),
     "hi": (
-        "The user is speaking Hindi. "
-        "MANDATORY: You MUST respond warmly and naturally in Hindi. "
-        "All conversational text and the 'answer' field MUST be written in Devanagari Hindi script, NOT English. "
-        "You may mix English technical terms naturally. "
-        "Use simple, friendly, conversational Hindi."
+        "The user is speaking Hindi (or Hinglish). "
+        "MANDATORY: You MUST respond warmly, fluently, and naturally in Hindi, just like a close friend or Alexa/ChatGPT. "
+        "Use warm, conversational, everyday Hindi (e.g., 'अरे बिल्कुल दोस्त!', 'मैं एकदम बढ़िया हूँ, आप बताइए!'). "
+        "All conversational responses and the 'answer' field MUST be in Devanagari Hindi script. "
+        "Mix common English terms naturally as spoken in modern conversation. "
+        "Never sound like a rigid machine. Be engaging, friendly, and helpful."
     ),
     "ta": (
-        "The user is speaking Tamil. "
-        "MANDATORY: You MUST respond warmly and naturally in Tamil. "
-        "All conversational text and the 'answer' field MUST be written in Tamil script, NOT English. "
-        "You may mix English technical terms naturally. "
-        "Use simple, friendly, conversational Tamil."
+        "The user is speaking Tamil (or Tanglish). "
+        "MANDATORY: You MUST respond warmly, fluently, and naturally in Tamil, like a friendly, intelligent companion. "
+        "Use natural spoken Tamil phrasing (e.g., 'நிச்சயமா நண்பா!', 'நான் ரொம்ப நல்லா இருக்கேன், சொல்லுங்க!'). "
+        "All conversational responses and the 'answer' field MUST be in Tamil script. "
+        "Mix English technical terms naturally. Be warm, supportive, and conversational."
     ),
     "te": (
-        "The user is speaking Telugu. "
-        "MANDATORY: You MUST respond warmly and naturally in Telugu. "
-        "All conversational text and the 'answer' field MUST be written in Telugu script, NOT English. "
-        "You may mix English technical terms naturally. "
-        "Use simple, friendly, conversational Telugu."
+        "The user is speaking Telugu (or Tenglish). "
+        "MANDATORY: You MUST respond warmly, fluently, and naturally in Telugu, like a friendly, smart companion. "
+        "Use natural spoken Telugu phrasing (e.g., 'తప్పకుండా మిత్రమా!', 'నేను చాలా బాగున్నాను, చెప్పండి!'). "
+        "All conversational responses and the 'answer' field MUST be in Telugu script. "
+        "Mix English technical terms naturally. Be warm, conversational, and energetic."
     ),
 }
 

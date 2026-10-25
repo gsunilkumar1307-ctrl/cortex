@@ -30,6 +30,15 @@ echo ""
 
 # ── 1. Gemini API key ──────────────────────────────────────
 if [ -z "${GEMINI_API_KEY:-}" ]; then
+  if [ -f "$ROOT/.env" ]; then
+    SAVED_KEY=$(grep -E "^GEMINI_API_KEY=" "$ROOT/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    if [ -n "$SAVED_KEY" ]; then
+      export GEMINI_API_KEY="$SAVED_KEY"
+    fi
+  fi
+fi
+
+if [ -z "${GEMINI_API_KEY:-}" ]; then
   if [ -f "$HOME/.zshrc" ]; then
     SAVED_KEY=$(grep -E "^export GEMINI_API_KEY=" "$HOME/.zshrc" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2 || true)
     if [ -n "$SAVED_KEY" ]; then

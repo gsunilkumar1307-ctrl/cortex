@@ -26,6 +26,13 @@ from backend.core.localization import (
     get_offline_knowledge,
 )
 from backend.core.language_detector import detect_language
+from backend.core.direct_answers import resolve_direct_answer, clean_search_response
+from backend.core.adaptive_tone import (
+    ToneMode,
+    AdaptiveToneContext,
+    detect_adaptive_tone,
+    apply_tone_to_prompt,
+)
 
 __all__ = [
     "RiskLevel",
@@ -51,4 +58,10 @@ __all__ = [
     "get_cortex_status",
     "get_offline_knowledge",
     "detect_language",
+    "resolve_direct_answer",
+    "clean_search_response",
+    "ToneMode",
+    "AdaptiveToneContext",
+    "detect_adaptive_tone",
+    "apply_tone_to_prompt",
 ]
