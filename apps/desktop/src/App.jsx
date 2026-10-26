@@ -1562,9 +1562,9 @@ function App() {
               }
               aria-label="Voice Orb"
             >
-              {voiceState === "speaking" ? <Volume2 size={36} /> :
-               (listening || voiceState === "capturing") ? <MicOff size={36} /> :
-               <Mic size={36} />}
+              {voiceState === "speaking" ? <Volume2 size={48} /> :
+               (listening || voiceState === "capturing") ? <MicOff size={48} /> :
+               <Mic size={48} />}
             </button>
           </div>
 
@@ -1588,25 +1588,6 @@ function App() {
             {turns.length === 0 ? (
               <div className="empty-stage-container">
                 <h1 className="stage-headline">How can I assist you today?</h1>
-                <p className="stage-subhead">A thoughtful personal companion for your workflow, documents, and Apple Mail.</p>
-                <div className="quick-suggestions-grid">
-                  <button className="suggestion-chip" onClick={() => sendTextMessage("Summarize my recent emails")}>
-                    <Inbox size={15} className="chip-icon" />
-                    <span>Summarize my recent emails</span>
-                  </button>
-                  <button className="suggestion-chip" onClick={() => sendTextMessage("Draft an email to HOD requesting original documents")}>
-                    <FileEdit size={15} className="chip-icon" />
-                    <span>Draft academic request in Apple Mail</span>
-                  </button>
-                  <button className="suggestion-chip" onClick={() => sendTextMessage("ಹೇಗಿದ್ದೀರಾ ಕಾರ್ಟೆಕ್ಸ್?")}>
-                    <Languages size={15} className="chip-icon" />
-                    <span>ಸಂಭಾಷಣೆ ಕನ್ನಡದಲ್ಲಿ (Kannada)</span>
-                  </button>
-                  <button className="suggestion-chip" onClick={() => sendTextMessage("Summarize our conversation")}>
-                    <History size={15} className="chip-icon" />
-                    <span>Summarize our conversation</span>
-                  </button>
-                </div>
               </div>
             ) : (
               turns.map((turn) => (
@@ -1690,44 +1671,6 @@ function App() {
 
         {/* ── Bottom Floating Dock ── */}
         <div className="dock">
-          <div className="dock-controls-row">
-            <div className="dock-left-controls">
-              <button
-                className={`dock-toggle-btn ${audioEnabled ? "active" : ""}`}
-                onClick={toggleAudio}
-                title={audioEnabled ? "Deactivate voice system" : "Activate voice assistant"}
-              >
-                {audioEnabled ? (
-                  wakeWordEnabled ? <><Radio size={12} /> Hands-Free 'Hey Cortex'</> : <><Mic size={12} /> Voice Ready</>
-                ) : (
-                  <><VolumeX size={12} /> Enable Voice</>
-                )}
-              </button>
-
-              {audioEnabled && (
-                <button
-                  className={`dock-toggle-btn ${wakeWordEnabled ? "active" : ""}`}
-                  onClick={() => setWakeWordEnabled(w => !w)}
-                  title={wakeWordEnabled ? "Hands-free continuous wake word ON" : "Push-to-Talk only"}
-                >
-                  <Sparkles size={12} />
-                  <span>{wakeWordEnabled ? "Wake Word ON" : "Push-To-Talk"}</span>
-                </button>
-              )}
-            </div>
-
-            <div className="dock-right-controls">
-              <button
-                className="dock-toggle-btn"
-                onClick={() => setPaletteOpen(true)}
-                title="Command Palette (⌘K)"
-              >
-                <Search size={12} />
-                <span>Actions ⌘K</span>
-              </button>
-            </div>
-          </div>
-
           {/* Composer Input */}
           <div className="composer">
             <input

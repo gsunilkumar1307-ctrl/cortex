@@ -45,7 +45,6 @@ try:
     from backend.agent.planner import AutonomousPlanner
     from backend.agent.email_engine import ProfessionalEmailEngine, EmailDraft, sanitize_untrusted_email_content
     from backend.agent.recipient_resolver import RecipientResolver, ResolutionResult, ResolvedRecipient
-    from backend.core.adaptive_tone import detect_adaptive_tone, apply_tone_to_prompt
 except ImportError:
     from capabilities import DeviceAutomation, classify_command
     from persistence import EncryptedMemoryStore
@@ -83,11 +82,6 @@ except ImportError:
     from planner import AutonomousPlanner
     from email_engine import ProfessionalEmailEngine, EmailDraft, sanitize_untrusted_email_content
     from recipient_resolver import RecipientResolver, ResolutionResult, ResolvedRecipient
-    try:
-        from core.adaptive_tone import detect_adaptive_tone, apply_tone_to_prompt
-    except ImportError:
-        detect_adaptive_tone = None
-        apply_tone_to_prompt = None
 
 try:
     import google.generativeai as genai
@@ -282,13 +276,10 @@ class CortexOrchestrator:
     def _handle_gemini_error(self, exc: Exception, context: str = "") -> None:
         err_str = str(exc).lower()
         if "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str or "rate limit" in err_str:
-            self.gemini_cooldown_until = time.time() + 300.0  # 5-minute cooldown
-            print(f"[cortex] Gemini quota/rate limit reached in {context}. Activated 5m circuit breaker for instant fallbacks: {exc}", file=sys.stderr)
-        elif "504" in err_str or "deadline expired" in err_str or "timed out" in err_str:
-            self.gemini_cooldown_until = time.time() + 60.0  # 1-minute cooldown
-            print(f"[cortex] Gemini API timed out in {context}. Cooldown 1m: {exc}", file=sys.stderr)
+            self.gemini_cooldown_until = time.time() + 180.0  # 3-minute cooldown
+            print(f"[cortex] Gemini quota/rate limit reached in {context}. Activated 3m circuit breaker for instant fallbacks: {exc}", file=sys.stderr)
         else:
-            print(f"[cortex] Gemini error in {context}: {exc}", file=sys.stderr)
+            print(f"[cortex] Gemini warning in {context}: {exc}", file=sys.stderr)
 
     def _analyze_intent(self, message: str, lang_code: str = "en") -> dict[str, Any]:
         if not self._is_gemini_available():
@@ -314,7 +305,7 @@ class CortexOrchestrator:
             response = model.generate_content(
                 chat_contents,
                 generation_config={"response_mime_type": "application/json"},
-                request_options={"timeout": 6.0}
+                request_options={"timeout": 20.0}
             )
             data = json.loads(response.text)
 
@@ -917,7 +908,18 @@ class CortexOrchestrator:
         if len(sequence) > 1:
             return self._chat_sequence(message, sequence, source)
 
-        analysis = self._analyze_intent(message, lang_code=raw_lang_code)
+        fast_cmd = command_from_intent(message)
+        if fast_cmd == TaskCommand.ASK_QUESTION:
+            analysis = {
+                "command": TaskCommand.ASK_QUESTION,
+                "params": {},
+                "risk_level": RiskLevel.LOW,
+                "requires_approval": False,
+                "block_reason": None,
+                "answer": None,
+            }
+        else:
+            analysis = self._analyze_intent(message, lang_code=raw_lang_code)
         command = analysis["command"]
         risk = analysis["risk_level"]
         approval = analysis["requires_approval"]
@@ -1355,19 +1357,6 @@ class CortexOrchestrator:
     def memories(self) -> list[dict[str, Any]]:
         return self.memory.list()
 
-    def delete_memory(self, memory_id: str) -> bool:
-        return self.memory.delete(memory_id)
-
-    def clear_memories(self, kind: str | None = None) -> int:
-        return self.memory.clear(kind=kind)
-
-    def clear_history(self) -> None:
-        self.history = []
-        try:
-            self.memory.delete("conversation_history")
-        except Exception:
-            pass
-
     def _summarize_search(self, query: str, results: list[dict[str, str]]) -> str:
         # Check direct answer first
         direct = resolve_direct_answer(query)
@@ -1442,98 +1431,9 @@ class CortexOrchestrator:
             lines = [f"• From {e.get('sender', 'Unknown')}: {e.get('subject', 'No subject')}" for e in emails]
             return f"You have {len(emails)} recent emails:\n" + "\n".join(lines)
 
-    def _summarize_conversation_history(self, lang_code: str = "en") -> str:
-        """Summarizes past dialogue turns without fabricating details."""
-        if not self.history:
-            return "Our conversation just started — there are no previous turns to summarize yet."
-
-        history_lines = []
-        for item in self.history[-12:]:
-            role = "User" if item.get("role") == "user" else "Cortex"
-            parts = item.get("parts", [])
-            text = " ".join(parts) if isinstance(parts, list) else str(parts)
-            history_lines.append(f"{role}: {text}")
-
-        history_text = "\n".join(history_lines)
-
-        if not self._is_gemini_available():
-            return f"Here is a recap of our recent conversation:\n\n{history_text}"
-
-        try:
-            model = self._create_gemini_model()
-            lang_instr = language_instruction(lang_code)
-            prompt = (
-                "You are Cortex, summarizing the following dialogue between the user and yourself.\n"
-                "Provide a crisp, objective summary covering:\n"
-                "1. Topics discussed\n"
-                "2. Decisions reached\n"
-                "3. Open action items or questions\n\n"
-                f"{lang_instr}\n\n"
-                f"Conversation:\n{history_text}"
-            )
-            resp = model.generate_content(prompt, request_options={"timeout": 6.0})
-            if resp and resp.text:
-                return resp.text.strip()
-        except Exception as e:
-            self._handle_gemini_error(e, context="summarize conversation")
-
-        return f"Recent conversation overview:\n\n{history_text}"
-
-    def _summarize_document(self, text_or_path: str, lang_code: str = "en") -> str:
-        """Summarizes a provided document text or local file safely."""
-        content = text_or_path.strip()
-        # If it looks like a local file path, attempt safe read
-        if (content.startswith("/") or content.startswith("./") or content.endswith((".txt", ".md", ".json", ".log"))) and len(content) < 300:
-            target_path = Path(content).expanduser().resolve()
-            if target_path.is_file():
-                try:
-                    content = target_path.read_text(encoding="utf-8", errors="replace")[:50000]
-                except Exception as e:
-                    return f"Could not read document at {target_path}: {e}"
-            else:
-                return f"Document file not found: {content}"
-
-        if not content:
-            return "No document content provided to summarize."
-
-        snippet = content[:25000]
-
-        if not self._is_gemini_available():
-            preview = snippet[:500] + ("..." if len(snippet) > 500 else "")
-            return f"Document Summary (Local Preview):\n\nLength: {len(snippet)} characters.\n\n{preview}"
-
-        try:
-            model = self._create_gemini_model()
-            lang_instr = language_instruction(lang_code)
-            prompt = (
-                "You are Cortex, an expert research assistant.\n"
-                "Summarize the following document accurately. Do not invent any facts not present in the text.\n"
-                "Highlight:\n"
-                "- Core thesis or executive summary\n"
-                "- Key points and findings\n"
-                "- Concrete action items or deadlines\n\n"
-                f"{lang_instr}\n\n"
-                f"Document Content:\n{snippet}"
-            )
-            resp = model.generate_content(prompt, request_options={"timeout": 7.0})
-            if resp and resp.text:
-                return resp.text.strip()
-        except Exception as e:
-            self._handle_gemini_error(e, context="summarize document")
-            return f"Document summary preview ({len(snippet)} chars):\n\n" + snippet[:400]
-
     def _answer_general_question(self, query: str, lang_code: str = "en") -> str:
         """Google-style direct answering: fact first, explanation after."""
         q_lower = query.lower().strip()
-
-        # Check for conversation recap / summary requests
-        if re.search(r"\b(?:summarize|recap|summary of)\s+(?:our\s+)?(?:conversation|chat|discussion|talk)\b", q_lower):
-            return self._summarize_conversation_history(lang_code)
-
-        # Check for document summary requests
-        doc_match = re.search(r"\b(?:summarize\s+(?:document|file|text|this))\s+(.+)", query, flags=re.IGNORECASE)
-        if doc_match:
-            return self._summarize_document(doc_match.group(1).strip(), lang_code)
 
         # 0. Smart Direct Answers (Real-time world time, dates, system clock, calculations)
         direct_ans = resolve_direct_answer(query, lang_code)
@@ -1591,17 +1491,12 @@ class CortexOrchestrator:
                 if lang_instr:
                     system += f"\n{lang_instr}\n"
 
-                # Apply situational adaptive tone
-                if detect_adaptive_tone and apply_tone_to_prompt:
-                    tone_ctx = detect_adaptive_tone(query)
-                    system = apply_tone_to_prompt(system, tone_ctx)
-
                 model = self._create_gemini_model(system_instruction=system)
 
                 chat_contents = list(self.history)
                 chat_contents.append({"role": "user", "parts": [query]})
 
-                resp = model.generate_content(chat_contents, request_options={"timeout": 7.0})
+                resp = model.generate_content(chat_contents, request_options={"timeout": 35.0})
                 if resp and resp.text:
                     return resp.text.strip()
             except Exception as e:

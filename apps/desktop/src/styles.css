@@ -362,13 +362,13 @@ button {
 
 /* ─── Siri-Inspired Living Orb ────────────────────────────── */
 .orb-wrap {
-  width: 136px;
-  height: 136px;
+  width: 220px;
+  height: 220px;
   position: relative;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  margin: 4px 0 2px;
+  margin: 18px 0 8px;
   cursor: pointer;
 }
 
@@ -381,49 +381,49 @@ button {
 }
 
 .orb-ring-1 {
-  inset: -12px;
-  border: 1.5px solid rgba(var(--accent-rgb), 0.22);
+  inset: -18px;
+  border: 1.5px solid rgba(var(--accent-rgb), 0.25);
   filter: blur(1px);
 }
 
 .orb-ring-2 {
-  inset: -24px;
-  border: 1px solid rgba(var(--accent-rgb), 0.12);
-  opacity: 0.7;
+  inset: -38px;
+  border: 1px solid rgba(var(--accent-rgb), 0.14);
+  opacity: 0.75;
 }
 
 .orb-ring-3 {
-  inset: -38px;
-  border: 1px dashed rgba(var(--accent-rgb), 0.08);
-  opacity: 0.5;
+  inset: -60px;
+  border: 1px dashed rgba(var(--accent-rgb), 0.09);
+  opacity: 0.55;
 }
 
 .orb-glow-field {
   position: absolute;
-  inset: -50px;
+  inset: -80px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.3) 0%, rgba(var(--accent-2-rgb), 0.16) 40%, transparent 70%);
-  filter: blur(28px);
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.35) 0%, rgba(var(--accent-2-rgb), 0.18) 40%, transparent 70%);
+  filter: blur(34px);
   pointer-events: none;
-  opacity: 0.65;
+  opacity: 0.70;
   transition: opacity var(--transition-slow), transform var(--transition-slow);
 }
 
 /* Orb Button Core — Warm Hearth Living Sphere */
 .voiceButton {
-  width: 108px;
-  height: 108px;
+  width: 172px;
+  height: 172px;
   border-radius: 50%;
-  border: 1.5px solid var(--border-2);
+  border: 2px solid var(--border-2);
   background:
     radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.45) 0%, transparent 40%),
     radial-gradient(circle at 65% 75%, rgba(var(--accent-2-rgb), 0.45) 0%, transparent 50%),
     radial-gradient(circle at 45% 50%, rgba(var(--accent-rgb), 0.45) 0%, transparent 60%),
     var(--surface-2);
   box-shadow:
-    0 0 50px rgba(var(--accent-rgb), 0.28),
-    inset 0 2px 4px rgba(255, 255, 255, 0.25),
-    inset 0 -2px 6px rgba(0, 0, 0, 0.35);
+    0 0 65px rgba(var(--accent-rgb), 0.32),
+    inset 0 2px 5px rgba(255, 255, 255, 0.30),
+    inset 0 -3px 8px rgba(0, 0, 0, 0.40);
   display: grid;
   place-items: center;
   position: relative;
@@ -435,8 +435,8 @@ button {
 .voiceButton:hover {
   transform: scale(1.05);
   box-shadow:
-    0 0 70px rgba(var(--accent-rgb), 0.42),
-    inset 0 2px 5px rgba(255, 255, 255, 0.35);
+    0 0 90px rgba(var(--accent-rgb), 0.46),
+    inset 0 2px 6px rgba(255, 255, 255, 0.40);
 }
 
 .voiceButton:active {

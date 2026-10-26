@@ -11,7 +11,7 @@ def test_circuit_breaker_trips_on_429():
     exc = Exception("429 ResourceExhausted: You exceeded your current quota")
     orchestrator._handle_gemini_error(exc, context="unit test")
 
-    assert orchestrator.gemini_cooldown_until > time.time() + 200.0
+    assert orchestrator.gemini_cooldown_until > time.time() + 100.0
     assert orchestrator._is_gemini_available() is False
 
 def test_fast_response_when_gemini_in_cooldown():
