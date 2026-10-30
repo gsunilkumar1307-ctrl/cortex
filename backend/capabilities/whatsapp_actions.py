@@ -186,13 +186,21 @@ def compose_whatsapp_message(
         # If the quoted text is the core message, return it directly
         return quoted_text
 
-    # 2. Strip meta-instruction suffixes (e.g., "Show me the exact recipient...", "Do not send this")
-    clean_body = re.sub(
-        r"(?:,\s*)?(?:show\s+me\s+the\s+exact\s+recipient\s+and\s+message.*|do\s+not\s+send\s+.*|dont\s+send\s+.*|without\s+sending.*|draft\s+only.*)$",
-        "",
-        clean_inst,
-        flags=re.IGNORECASE,
-    ).strip()
+    # 2. Strip meta-instruction suffixes (e.g., "Show me the exact recipient...", "Do not send this", "Do not send it")
+    meta_instruction_pattern = (
+        r"(?:[.,;—–-]\s*)?"
+        r"(?:do\s+not\s+send\s*(?:it|this|anything)?|"
+        r"dont\s+send\s*(?:it|this|anything)?|"
+        r"don'?t\s+send\s*(?:it|this|anything)?|"
+        r"never\s+send\s*(?:it|this|anything)?|"
+        r"without\s+sending(?:\s+it|\s+anything)?|"
+        r"draft\s+only|"
+        r"just\s+draft(?:\s+it)?|"
+        r"only\s+draft|"
+        r"show\s+me\s+the\s+exact\s+recipient\s+and\s+message.*)"
+        r"[.,;!?]?\s*$"
+    )
+    clean_body = re.sub(meta_instruction_pattern, "", clean_inst, flags=re.IGNORECASE).strip()
 
     # 3. Strip command and instruction wrappers
     clean_body = re.sub(
@@ -201,6 +209,9 @@ def compose_whatsapp_message(
         clean_body,
         flags=re.IGNORECASE,
     ).strip()
+
+    # Repeat meta-instruction strip in case wrapper removal unmasked trailing constraints
+    clean_body = re.sub(meta_instruction_pattern, "", clean_body, flags=re.IGNORECASE).strip()
 
     # 4. Strip "Inform him that", "Tell him that", "Remind her that"
     inform_match = re.search(
@@ -252,6 +263,20 @@ def compose_whatsapp_message(
     if is_inform:
         body_content = clean_body[0].lower() + clean_body[1:] if len(clean_body) > 1 else clean_body
         return f"{greeting} just a reminder that {body_content}."
+
+    # If the user gave a direct statement to a generic descriptor or test contact, preserve exact content
+    is_generic_contact = (
+        not recipient_name
+        or recipient_name.lower().startswith("my ")
+        or "test contact" in recipient_name.lower()
+        or recipient_name.lower() in ("the recipient", "someone", "contact")
+        or any(char.isdigit() for char in recipient_name)
+    )
+    if not late_match and is_generic_contact:
+        body_content = clean_body[0].upper() + clean_body[1:] if len(clean_body) > 1 else clean_body.upper()
+        if not body_content.endswith((".", "!", "?")):
+            body_content += "."
+        return body_content
 
     # General clean message capitalization
     body_content = clean_body[0].upper() + clean_body[1:] if len(clean_body) > 1 else clean_body.upper()

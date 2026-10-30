@@ -1863,7 +1863,7 @@ class CortexOrchestrator:
                 "lang": raw_lang_code,
             }
             response = localize("need_note_body", raw_lang_code, title=title)
-        elif (command in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP)) and ("whatsapp" in message.lower() or command in (TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP) or params.get("channel") == "whatsapp"):
+        elif (command in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP)) and ("whatsapp" in message.lower() or command in (TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP) or params.get("channel") == "whatsapp" or "prepare" in message.lower() or "draft" in message.lower()):
             raw_rec = params.get("recipient", "").strip()
             raw_body = params.get("body", "").strip()
 
@@ -2281,10 +2281,24 @@ class CortexOrchestrator:
             response = localize("approval_prompt", raw_lang_code, action=command.value.replace('_', ' '))
         else:
             self._execute(task)
-            response = task.result or localize("action_done", raw_lang_code)
+            if task.status in (TaskStatus.FAILED, "failed"):
+                response = task.error or localize("action_failed", raw_lang_code)
+            elif task.status in (TaskStatus.BLOCKED, "blocked"):
+                response = task.error or localize("action_blocked", raw_lang_code)
+            elif task.status in (TaskStatus.NEED_INFO, "need_info"):
+                response = task.error or "Additional information needed."
+            else:
+                response = task.result or localize("action_done", raw_lang_code)
 
-        # Update conversation history on success
-        if risk != RiskLevel.BLOCKED and not approval and command != TaskCommand.UNKNOWN:
+        # Update conversation history on success (only for conversational turns, avoiding operator clutter)
+        if risk != RiskLevel.BLOCKED and not approval and command not in (
+            TaskCommand.UNKNOWN,
+            TaskCommand.OBSERVE_SCREEN,
+            TaskCommand.RESOLVE_UI_ELEMENT,
+            TaskCommand.CLICK_ELEMENT,
+            TaskCommand.TYPE_IN_ELEMENT,
+            TaskCommand.DESKTOP_WORKFLOW,
+        ) and task.status != TaskStatus.FAILED:
             self.history.append({"role": "user", "parts": [message]})
             self.history.append({"role": "model", "parts": [response]})
             if len(self.history) > 20:
@@ -3059,15 +3073,37 @@ class CortexOrchestrator:
 
         if task.command == TaskCommand.WEB_SEARCH:
             query = task.params.get("query", task.intent)
+            is_safari = task.params.get("browser") == "Safari" or "safari" in task.intent.lower()
             task.add_event("web_search_started", f"Searching the web for: {query}")
+
+            safari_opened = False
+            if is_safari and sys.platform == "darwin" and not self.automation.dry_run:
+                try:
+                    search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+                    import subprocess
+                    subprocess.run(["open", "-a", "Safari", search_url], check=False)
+                    safari_opened = True
+                    task.add_event("safari_opened", f"Opened Safari with search URL for '{query}'.")
+                except Exception as e:
+                    print(f"[cortex] Failed to open Safari: {e}", file=sys.stderr)
+
             results = search_web(query)
             if results:
                 task.add_event("web_search_completed", f"Found {len(results)} results.")
                 answer = self._summarize_search(query, results)
                 task.status = TaskStatus.COMPLETED
-                task.result = answer
+                if safari_opened:
+                    task.result = f"Opened Safari with research results for '{query}'.\n\n{answer}"
+                else:
+                    task.result = answer
                 task.add_event("completed", "Web search results summarized.")
             else:
+                if safari_opened:
+                    task.status = TaskStatus.COMPLETED
+                    task.result = f"Opened Safari with search for '{query}'."
+                    task.add_event("completed", "Opened Safari search query.")
+                    return
+
                 if self._is_gemini_available():
                     try:
                         model = self._create_gemini_model()
@@ -3081,12 +3117,40 @@ class CortexOrchestrator:
                         return
                     except Exception as e:
                         self._handle_gemini_error(e, context="web search fallback")
-                    task.status = TaskStatus.FAILED
-                    task.error = "No search results found."
-                    task.add_event("failed", "Web search returned no results.")
+                task.status = TaskStatus.FAILED
+                task.error = f"No search results found for '{query}'."
+                task.add_event("failed", task.error)
+            return
+
+        # ── Search & File Listing Execution ────────────────────────────
+        if task.command == TaskCommand.SEARCH_FILES:
+            task.add_event("file_search_started", f"Searching files in {task.params.get('directory', '.')}")
+            read_result = self.automation.execute(TaskCommand.SEARCH_FILES, task.params)
+            if read_result.ok:
+                task.status = TaskStatus.COMPLETED
+                task.result = read_result.message
+                task.add_event("completed", read_result.message, files=read_result.data.get("files", []))
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = read_result.message
+                task.add_event("failed", read_result.message)
             return
 
         # ── Phase 5: Mail Automation Execution ─────────────────────────
+        if task.command == TaskCommand.DRAFT_MAIL:
+            read_result = self.automation.execute(TaskCommand.DRAFT_MAIL, task.params)
+            recip = task.params.get("recipient", "recipient")
+            subj = task.params.get("subject", "No subject")
+            if read_result.ok:
+                task.status = TaskStatus.COMPLETED
+                task.result = f"Draft created in Apple Mail for {recip} with subject '{subj}'."
+                task.add_event("completed", task.result)
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = read_result.message or "Failed to create draft in Apple Mail."
+                task.add_event("failed", task.error)
+            return
+
         if task.command == TaskCommand.SUMMARIZE_MAIL:
             task.add_event("mail_fetch_started", "Reading recent emails from inbox.")
             read_result = self.automation.execute(TaskCommand.READ_MAIL, task.params)
@@ -3150,7 +3214,22 @@ class CortexOrchestrator:
                 else:
                     task.result = final_res.summary or localize("action_done", lang)
             else:
-                task.result = final_res.summary or task.result or "Completed."
+                if task.command == TaskCommand.OPEN_APP:
+                    task.result = f"Opened {task.params.get('appName', 'application')}."
+                elif task.command == TaskCommand.CLOSE_APP:
+                    task.result = f"Closed {task.params.get('appName', 'application')}."
+                elif task.command == TaskCommand.FOCUS_APP:
+                    task.result = f"Focused {task.params.get('appName', 'application')}."
+                elif task.command == TaskCommand.SCREENSHOT:
+                    task.result = "Screenshot captured successfully."
+                elif task.command == TaskCommand.CALCULATE:
+                    task.result = f"Result: {final_res.summary or task.params.get('expression', '')}"
+                elif task.command == TaskCommand.WRITE_NOTE:
+                    task.result = f"Note created: '{task.params.get('title', 'Cortex Note')}'"
+                elif task.command == TaskCommand.SEND_MESSAGE:
+                    task.result = f"Message sent to {task.params.get('recipient', 'recipient')}."
+                else:
+                    task.result = final_res.summary or task.result or "Completed."
         else:
             task.status = TaskStatus.FAILED
             task.error = final_res.summary or task.error or "Execution failed."
@@ -3207,6 +3286,8 @@ class CortexOrchestrator:
             if command == TaskCommand.FOCUS_APP:
                 match = re.search(r"(?:focus|switch to|bring up|activate)\s+(.+)", text, re.IGNORECASE)
             app_raw = match.group(1).strip() if match else text
+            if re.search(r"\s+and\s+", app_raw, re.IGNORECASE):
+                app_raw = re.split(r"\s+and\s+", app_raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
             # Strip Indic action verbs and postpositions
             app_raw = re.sub(
                 r"(?:ಅನ್ನು\s*ತೆರೆ|ಅನ್ನು\s*ಮುಚ್ಚು|ತೆರೆ|ಮುಚ್ಚು|ಓಪನ್\s*ಮಾಡು|ಕ್ಲೋಸ್\s*ಮಾಡು|ಚಾಲೂ\s*ಮಾಡು|ಪ್ರಾರಂಭಿಸು|"
@@ -3281,6 +3362,22 @@ class CortexOrchestrator:
             is_draft = is_draft_only_request(message) or is_draft_only_request(text)
 
             def _ret(r: str, b: str = "") -> dict[str, Any]:
+                b = re.sub(
+                    r"(?:[.,;—–-]\s*)?"
+                    r"(?:do\s+not\s+send\s*(?:it|this|anything)?|"
+                    r"dont\s+send\s*(?:it|this|anything)?|"
+                    r"don'?t\s+send\s*(?:it|this|anything)?|"
+                    r"never\s+send\s*(?:it|this|anything)?|"
+                    r"without\s+sending(?:\s+it|\s+anything)?|"
+                    r"draft\s+only|"
+                    r"just\s+draft(?:\s+it)?|"
+                    r"only\s+draft|"
+                    r"show\s+me\s+the\s+exact\s+recipient\s+and\s+message.*)"
+                    r"[.,;!?]?\s*$",
+                    "",
+                    b,
+                    flags=re.IGNORECASE,
+                ).strip()
                 d = {"recipient": r, "body": b}
                 if is_wa:
                     d["channel"] = "whatsapp"
@@ -3535,7 +3632,8 @@ class CortexOrchestrator:
                 "attachments": attachments,
             }
         if command == TaskCommand.WEB_SEARCH:
-            query = re.sub(r"^(?:google|search the web for|search for|search|look up)\s+", "", text, flags=re.IGNORECASE).strip()
+            query = re.sub(r"^(?:google|search the web for|search for|search|look up|research)\s+", "", text, flags=re.IGNORECASE).strip()
+            query = re.sub(r"\s+in\s+safari$", "", query, flags=re.IGNORECASE).strip()
             filter_m = re.search(r"^(.*?)\s+(?:under|below|less than|priced under|priced at most)\s+([₹$€£]?\s*[\d,]+.*)$", query, re.IGNORECASE)
             if filter_m:
                 clean_q = filter_m.group(1).strip()
@@ -3565,7 +3663,12 @@ class CortexOrchestrator:
         if command == TaskCommand.DAILY_BRIEFING:
             return {}
         if command == TaskCommand.SEARCH_FILES:
-            m = re.search(r"(?:find file|search file|look for file|locate file|find the file)\s+(.+?)(?:\s+in\s+(.+))?$", text, re.IGNORECASE)
+            clean_f = re.sub(r"^(?:open\s+finder\s+(?:and\s+|to\s+)?|finder\s+and\s+)?", "", text, flags=re.IGNORECASE).strip()
+            list_m = re.search(r"^(?:list\s+(?:files\s+in\s+|my\s+|the\s+)?|show\s+(?:files\s+in\s+|my\s+|the\s+)?)(.+)$", clean_f, re.IGNORECASE)
+            if list_m:
+                target = list_m.group(1).strip()
+                return {"pattern": "*", "directory": target}
+            m = re.search(r"(?:find file|search file|look for file|locate file|find the file)\s+(.+?)(?:\s+in\s+(.+))?$", clean_f, re.IGNORECASE)
             if m:
                 pat = m.group(1).strip()
                 dir_ = m.group(2).strip() if m.group(2) else "."

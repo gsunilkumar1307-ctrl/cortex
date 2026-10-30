@@ -945,8 +945,14 @@ def command_from_intent(intent: str) -> TaskCommand:
     if text.startswith(("write note ", "write a note ", "create note ", "create a note ", "take a note ", "note ")):
         return TaskCommand.WRITE_NOTE
     if (
-        text.startswith(("send message ", "send a message ", "text ", "message "))
-        or (text.startswith("send ") and any(m in text for m in ("message", "whatsapp", "sms")) and not any(e in text for e in ("mail", "email")))
+        text.startswith((
+            "send message ", "send a message ", "text ", "message ",
+            "prepare message ", "prepare a message ", "draft message ", "draft a message ",
+            "create message ", "create a message ", "compose message ", "compose a message ",
+            "prepare whatsapp ", "prepare a whatsapp ", "draft whatsapp ", "draft a whatsapp ",
+            "send whatsapp ", "send a whatsapp "
+        ))
+        or (text.startswith(("send ", "prepare ", "draft ", "create ")) and any(m in text for m in ("message", "whatsapp", "sms")) and not any(e in text for e in ("mail", "email")))
         or (any(m in text for m in ("whatsapp", "ವಾಟ್ಸಾಪ್", "व्हाट्सएप", "வாட்ஸ்அப்", "వాట్సాప్")) and any(v in text for v in ("message", "send", "ಸಂದೇಶ", "ಕಳುಹಿಸಿ", "ಕಳಿಸಿ", "संदेश", "भेजें", "भेजो", "मैसेज", "செய்தி", "அனுப்பு", "సందేశం", "పంపు")))
     ):
         return TaskCommand.SEND_MESSAGE
@@ -1029,6 +1035,26 @@ def command_from_intent(intent: str) -> TaskCommand:
         return TaskCommand.INSPECT_APP
     if text.startswith(("close ", "exit ", "quit ")) or any(phrase in text for phrase in ("close app", "close application", "quit app", "quit application")):
         return TaskCommand.CLOSE_APP
+    # ── File / Finder Listing & Inspection ──────────────────
+    if (
+        any(phrase in text for phrase in (
+            "open finder and list", "list files in", "list my files in", "show files in", "show me files in",
+            "list files", "show files", "show me files", "files in downloads", "files in documents", "files in desktop",
+            "files in finder", "list my downloads", "list downloads", "show my downloads", "show downloads",
+            "what files are in", "view files in", "browse files in"
+        ))
+        or (text.startswith("finder ") and "files" in text)
+    ):
+        return TaskCommand.SEARCH_FILES
+
+    # ── Web Research / Safari Search ────────────────────────
+    if (
+        re.search(r"\b(?:search\s+for|research|look\s+up|google)\b.*\b(?:in\s+safari|using\s+safari|on\s+safari)\b", text)
+        or re.search(r"\bopen\s+safari\s+(?:and\s+|to\s+)(?:search\s+for|research|google|look\s+up)\b", text)
+        or text.startswith("research ")
+    ):
+        return TaskCommand.WEB_SEARCH
+
     if text.startswith("open ") or "launch " in text or "start " in text:
         return TaskCommand.OPEN_APP
     if text.startswith(("move file ", "rename file ", "move the file ")):

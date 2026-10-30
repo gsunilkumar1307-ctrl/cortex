@@ -455,8 +455,14 @@ class DeviceAutomation:
 
     def resolve_app_name(self, app_name: str) -> str:
         """Resolve recognized application names and aliases to their canonical OS application title."""
-        cleaned = (app_name or "").strip().lower()
-        return APP_ALIASES.get(cleaned, (app_name or "").strip())
+        raw = (app_name or "").strip()
+        # Handle compound requests like "Finder and list my downloads" or "Safari and search"
+        if " and " in raw.lower():
+            first_clause = re.split(r"\s+and\s+", raw, flags=re.IGNORECASE)[0].strip()
+            if first_clause.lower() in APP_ALIASES or first_clause.lower() in ("finder", "safari", "mail", "notes", "terminal", "chrome", "whatsapp"):
+                raw = first_clause
+        cleaned = raw.lower()
+        return APP_ALIASES.get(cleaned, raw)
 
     def is_app_running(self, app_name: str) -> bool:
         """Determines whether target application process is active and running."""
@@ -1077,17 +1083,75 @@ class DeviceAutomation:
             return DeviceActionResult(False, f"Failed to read file: {e}")
 
     def _search_files(self, pattern: str, directory: str = ".") -> DeviceActionResult:
-        safe, d = _is_safe_path(directory)
+        dir_clean = str(directory).strip().lower()
+        if dir_clean in ("downloads", "~/downloads", "download"):
+            target_dir = str(Path.home() / "Downloads")
+        elif dir_clean in ("documents", "~/documents", "document"):
+            target_dir = str(Path.home() / "Documents")
+        elif dir_clean in ("desktop", "~/desktop"):
+            target_dir = str(Path.home() / "Desktop")
+        elif dir_clean in ("finder", "home", "~"):
+            target_dir = str(Path.home())
+        else:
+            target_dir = directory
+
+        safe, d = _is_safe_path(target_dir)
         if not safe or not d.exists():
-            return DeviceActionResult(False, f"Invalid search directory: {directory}")
+            return DeviceActionResult(False, f"Directory not found: {directory}")
         try:
             matches = []
-            pat_lower = pattern.lower()
-            for root, _, files in os.walk(str(d)):
-                for f in files:
-                    if pat_lower in f.lower():
-                        matches.append(str(Path(root) / f))
-            return DeviceActionResult(True, f"Found {len(matches)} files matching '{pattern}'", {"files": matches})
+            pat_clean = (pattern or "").strip().lower()
+            is_broad = pat_clean in ("*", "", "all", "files", "list", "show files", "list files", "downloads", "my downloads", "finder")
+
+            try:
+                if is_broad:
+                    for item in d.iterdir():
+                        if not item.name.startswith("."):
+                            matches.append(item)
+                else:
+                    for root, _, files in os.walk(str(d)):
+                        for f in files:
+                            if not f.startswith(".") and pat_clean in f.lower():
+                                matches.append(Path(root) / f)
+                                if len(matches) >= 50:
+                                    break
+                        if len(matches) >= 50:
+                            break
+            except (PermissionError, OSError):
+                if sys.platform == "darwin":
+                    osa_target = "downloads folder" if "download" in str(d).lower() else f'POSIX file "{str(d)}"'
+                    cmd = ["osascript", "-e", f'tell application "Finder" to get name of every item of ({osa_target})']
+                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    if p.returncode == 0 and p.stdout.strip():
+                        raw_names = [n.strip() for n in p.stdout.strip().split(",") if n.strip()]
+                        for name in raw_names:
+                            if not name.startswith("."):
+                                if is_broad or pat_clean in name.lower():
+                                    matches.append(d / name)
+
+            def _get_mtime(p: Path) -> float:
+                try:
+                    return p.stat().st_mtime
+                except Exception:
+                    return 0.0
+
+            matches.sort(key=_get_mtime, reverse=True)
+            top_matches = matches[:20]
+            file_names = [m.name for m in top_matches]
+
+            if file_names:
+                lines = [f"• {name}" for name in file_names]
+                dir_display = d.name or str(d)
+                msg = f"Found {len(matches)} files in {dir_display}:\n" + "\n".join(lines)
+            else:
+                msg = f"No files found in {d.name}."
+
+            return DeviceActionResult(True, msg, {
+                "files": [str(m) for m in top_matches],
+                "names": file_names,
+                "directory": str(d),
+                "count": len(matches),
+            })
         except Exception as e:
             return DeviceActionResult(False, f"Search failed: {e}")
 
