@@ -91,3 +91,4 @@ python3 -m pytest tests/ -q
 npm run build --prefix apps/desktop
 ✓ built in 686ms
 ```
+

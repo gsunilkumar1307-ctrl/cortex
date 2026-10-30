@@ -345,6 +345,14 @@ class DeviceAutomation:
     def _browser_open_url(self, url: str) -> DeviceActionResult:
         if not url:
             return DeviceActionResult(False, "No URL provided.")
+        if self.dry_run:
+            return DeviceActionResult(True, f"Opened {url} in browser.", {"url": url})
+        if self.system == "darwin":
+            try:
+                subprocess.run(["open", "-a", "Safari", url], check=False)
+                return DeviceActionResult(True, f"Opened {url} in Safari.", {"url": url, "browser": "Safari"})
+            except Exception as e:
+                pass
         result = self._get_browser().open_url(url)
         return DeviceActionResult(result.ok, result.message, result.data)
 

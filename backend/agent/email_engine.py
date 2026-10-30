@@ -477,9 +477,9 @@ class ProfessionalEmailEngine:
             subj = p1b.group(2).strip()
             return _wrap(raw_rec, subj, "")
 
-        # Pattern 2: send/draft email to <recipient> saying/body/that says/asking/requesting <content>
+        # Pattern 2: send/draft email to <recipient> saying/body/that says/asking/requesting/about <content>
         p2 = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|:)\s+(.+)",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|about|:)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -690,12 +690,16 @@ class ProfessionalEmailEngine:
 
         text = purpose_or_content.strip()
         clean_text = re.sub(
-            r"^(?:send|draft|write|mail)\s+(?:an?\s+)?(?:email|mail)\s+(?:to\s+)?[^,\n]+?\s+(?:saying|explaining|asking|informing|requesting|telling|that|with|:)\s+",
+            r"^(?:send|draft|write|mail)\s+(?:an?\s+)?(?:email|mail)\s+(?:to\s+)?[^,\n]+?\s+(?:saying|explaining|asking|informing|requesting|telling|that|with|about|regarding|:)\s+",
             "",
             text,
             flags=re.IGNORECASE,
         ).strip()
         clean_lower = clean_text.lower()
+
+        # 0. Research / AI findings / Updates
+        if any(w in clean_lower for w in ("research findings", "ai findings", "research results", "research update", "ai updates", "ai research", "research")):
+            return "AI Research Findings & Updates" if "ai" in clean_lower else "Research Findings & Updates"
 
         # 1. Explicit Extension Request (DO NOT assume extension unless explicitly requested)
         if any(w in clean_lower for w in ("extension", "extend", "extra time", "postpone", "delay submission", "need more time", "one more day", "more day", "another day")):

@@ -294,6 +294,10 @@ class CortexOrchestrator:
         self.history: list[dict[str, Any]] = []
         self.pending_action: dict[str, Any] | None = None
         self.paused_tasks: list[dict[str, Any]] = []
+        self.last_search_results: list[dict[str, Any]] = []
+        self.last_search_query: str = ""
+        self.last_selected_result: dict[str, Any] | None = None
+        self.last_opened_url: str = ""
 
         self.policy_engine = PolicyEngine()
         self.policy = self.policy_engine
@@ -2196,6 +2200,11 @@ class CortexOrchestrator:
                 content_for_draft = clean_body or raw_body
                 tone_override = meta.get("extracted_tone")
 
+                # Cooperative intelligence: enrich draft with recent research findings if available
+                if any(w in raw_body.lower() for w in ("research findings", "findings", "research results", "ai research")) and self.last_search_results:
+                    findings_bullets = "\n".join([f"• {r['title']}: {clean_search_response(r.get('body', ''))[:120]}..." for r in self.last_search_results[:3] if r.get('title')])
+                    content_for_draft = f"Here is a summary of the latest AI research findings:\n\n{findings_bullets}\n\nPlease let me know if you would like me to dive deeper into any of these areas."
+
                 draft = self.email_engine.compose_email(
                     raw_intent=message,
                     recipient_raw=rec_display,
@@ -2833,11 +2842,17 @@ class CortexOrchestrator:
             except Exception as e:
                 self._handle_gemini_error(e, context="summarize search")
 
-        # Offline fallback: clean snippets thoroughly (unescape HTML entities, strip tags)
-        cleaned_bodies = [clean_search_response(r.get("body", "")) for r in results if r.get("body")]
-        cleaned_bodies = [b for b in cleaned_bodies if b]
-        if cleaned_bodies:
-            return cleaned_bodies[0] if len(cleaned_bodies) == 1 else cleaned_bodies[0] + "\n\n" + cleaned_bodies[1]
+        # Structured results presentation with titles and clickable citations
+        formatted_items = []
+        for r in results[:3]:
+            title = r.get("title", "").strip()
+            body = clean_search_response(r.get("body", "")).strip()
+            link = r.get("href", "").strip()
+            if title and body:
+                link_line = f"\nSource: {link}" if link else ""
+                formatted_items.append(f"**{title}**\n{body}{link_line}")
+        if formatted_items:
+            return "\n\n".join(formatted_items)
 
         return f"No results found for '{query}'. Try rephrasing your question."
 
@@ -3027,6 +3042,21 @@ class CortexOrchestrator:
                 return "बिल्कुल, मैं आपकी पायथन (Python) प्रोग्रामिंग में मदद करने के लिए तैयार हूँ! कोड लिखना, एरर डीबग करना, या कोई प्रोजेक्ट बनाना — बताइए हम क्या शुरू करें?"
             return "I'd be glad to help you with Python! Whether you need to write clean scripts, debug an issue, design algorithms, or work with frameworks like FastAPI or PyTorch, let me know what you'd like to build or solve."
 
+        # Check for contextual reference to search results (e.g. "Explain the second result", "What is the second result")
+        is_result_ref = bool(re.search(r"\b(?:first|second|third|1st|2nd|3rd)\s+(?:result|article|finding|link)\b", q_lower)) or "second result" in q_lower
+        if is_result_ref and self.last_search_results:
+            target_idx = 1 if ("second" in q_lower or "2nd" in q_lower) else (0 if ("first" in q_lower or "1st" in q_lower) else 2)
+            if len(self.last_search_results) > target_idx:
+                target = self.last_search_results[target_idx]
+                self.last_selected_result = target
+                self.last_opened_url = target.get("href", "")
+                title = target.get("title", "Result")
+                body = clean_search_response(target.get("body", ""))
+                link = target.get("href", "")
+                ordinal = "second" if target_idx == 1 else ("first" if target_idx == 0 else f"{target_idx+1}th")
+                link_line = f"\n\nSource: {link}" if link else ""
+                return f"The {ordinal} result is **{title}**:\n\n{body}{link_line}"
+
         # Check for contextual simplification follow-up (e.g. "Explain that in simpler words", "Simplify that")
         is_simplify = bool(re.search(r"\b(?:simpler|simple words|simplify|eli5|easier|layman|simple terms)\b", q_lower))
         if is_simplify and self.history:
@@ -3202,7 +3232,57 @@ class CortexOrchestrator:
 
             results = search_web(query)
             if results:
+                self.last_search_results = results
+                self.last_search_query = query
                 task.add_event("web_search_completed", f"Found {len(results)} results.")
+
+                # Cooperative chain: search + open article in browser + explain
+                if task.params.get("cooperative_chain"):
+                    top = results[0]
+                    self.last_selected_result = top
+                    top_url = top.get("href", "")
+                    self.last_opened_url = top_url
+                    opened_safari = False
+                    if sys.platform == "darwin" and not self.automation.dry_run and top_url:
+                        subprocess.run(["open", "-a", "Safari", top_url], check=False)
+                        opened_safari = True
+                    elif self.automation.dry_run:
+                        opened_safari = True
+
+                    explanation = clean_search_response(top.get("body", ""))
+                    title = top.get("title", "Article")
+                    task.status = TaskStatus.COMPLETED
+                    safari_note = f"✓ Safari opened with article: {top_url}\n\n" if opened_safari else ""
+                    task.result = (
+                        f"Retrieved recent research findings for '{query}'.\n\n"
+                        f"{safari_note}"
+                        f"### {title}\n"
+                        f"{explanation}\n\n"
+                        f"Source: {top_url}"
+                    )
+                    task.add_event("completed", "Cooperative research and browser workflow completed.")
+                    return
+
+                # Focused explanation on a specific result target (e.g. second result)
+                if task.params.get("explain_target"):
+                    idx = task.params.get("target_index", 1)
+                    target = results[idx] if len(results) > idx else results[0]
+                    self.last_selected_result = target
+                    target_url = target.get("href", "")
+                    self.last_opened_url = target_url
+                    title = target.get("title", "Article")
+                    snippet = clean_search_response(target.get("body", ""))
+                    task.status = TaskStatus.COMPLETED
+                    ordinal = "second" if idx == 1 else ("first" if idx == 0 else f"{idx+1}th")
+                    task.result = (
+                        f"I searched for \"{query}\" and retrieved {len(results)} relevant results.\n\n"
+                        f"Here is an explanation of the {ordinal} result — **{title}**:\n\n"
+                        f"{snippet}\n\n"
+                        f"Source: {target_url}"
+                    )
+                    task.add_event("completed", f"Explained {ordinal} result.")
+                    return
+
                 answer = self._summarize_search(query, results)
                 task.status = TaskStatus.COMPLETED
                 if safari_opened:
@@ -3232,6 +3312,56 @@ class CortexOrchestrator:
                         self._handle_gemini_error(e, context="web search fallback")
                 task.status = TaskStatus.FAILED
                 task.error = f"No search results found for '{query}'."
+                task.add_event("failed", task.error)
+            return
+
+        # ── Contextual and Direct URL Browser Navigation ────────────────
+        if task.command == TaskCommand.OPEN_URL:
+            url = task.params.get("url", "")
+            browser = task.params.get("browser", "Safari")
+            title = "article"
+
+            # Resolve from session context if contextual reference
+            if task.params.get("use_context") or not url:
+                target_idx = task.params.get("target_index", 0)
+                if self.last_selected_result and target_idx == 0:
+                    url = self.last_selected_result.get("href", "")
+                    title = self.last_selected_result.get("title", "selected article")
+                elif self.last_search_results:
+                    idx = min(target_idx, len(self.last_search_results) - 1)
+                    target = self.last_search_results[idx]
+                    url = target.get("href", "")
+                    title = target.get("title", "article")
+                    self.last_selected_result = target
+                elif self.last_opened_url:
+                    url = self.last_opened_url
+                    title = "article"
+
+            if not url:
+                task.status = TaskStatus.FAILED
+                task.error = "No recent article or link found in conversation context to open."
+                task.add_event("failed", task.error)
+                return
+
+            self.last_opened_url = url
+            opened = False
+            if sys.platform == "darwin" and not self.automation.dry_run:
+                try:
+                    subprocess.run(["open", "-a", browser, url], check=False)
+                    opened = True
+                    task.add_event("safari_opened", f"Opened URL in {browser}: {url}")
+                except Exception as e:
+                    print(f"[cortex] Failed to open {browser}: {e}", file=sys.stderr)
+            elif self.automation.dry_run:
+                opened = True
+
+            if opened:
+                task.status = TaskStatus.COMPLETED
+                task.result = f"Opened '{title}' ({url}) in {browser}."
+                task.add_event("completed", task.result)
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = f"Failed to open {url} in {browser}."
                 task.add_event("failed", task.error)
             return
 
@@ -3583,9 +3713,31 @@ class CortexOrchestrator:
         if command == TaskCommand.REMINDER:
             return {"text": text}
         if command == TaskCommand.OPEN_URL:
+            # Check for contextual references: "that article", "the second result", etc.
+            is_contextual = bool(re.search(
+                r"\b(?:that|the|this|my|a)?\s*(?:second|first|third|2nd|1st|3rd)?\s*(?:article|result|link|page|url|story|post)\b",
+                text, re.IGNORECASE,
+            )) or bool(re.search(r"\bopen\s+that\s+article\b", text, re.IGNORECASE))
+
+            target_idx = 0
+            if "second" in text.lower() or "2nd" in text.lower() or " 2 " in text:
+                target_idx = 1
+            elif "third" in text.lower() or "3rd" in text.lower() or " 3 " in text:
+                target_idx = 2
+
+            browser = "Safari" if "safari" in text.lower() else "Safari"
+
             url_match = re.search(r"https?://\S+", text)
             if url_match:
-                return {"url": url_match.group(0)}
+                return {"url": url_match.group(0), "browser": browser}
+
+            if is_contextual:
+                return {
+                    "use_context": True,
+                    "target_index": target_idx,
+                    "browser": browser,
+                }
+
             # Site-name → URL lookup (fallback when Gemini is not available)
             _SITE_MAP = {
                 "youtube": "https://www.youtube.com",
@@ -3745,6 +3897,41 @@ class CortexOrchestrator:
                 "attachments": attachments,
             }
         if command == TaskCommand.WEB_SEARCH:
+            # Multi-capability cooperative: "find [topic], open [article] in safari, and explain it"
+            _coop_re = re.search(
+                r"^(?:find|search\s+(?:the\s+web\s+)?(?:for)?)\s+(.+?),\s*(?:open|load)\s+(?:the\s+)?(?:most\s+relevant\s+|first\s+|top\s+)?article\s+in\s+(safari|chrome|browser)?,\s*and\s+(?:explain|summarize)\s+it",
+                text,
+                re.IGNORECASE,
+            )
+            if _coop_re:
+                q = _coop_re.group(1).strip()
+                q = re.sub(r"^(?:the\s+)", "", q, flags=re.IGNORECASE).strip()
+                b = (_coop_re.group(2) or "Safari").title()
+                return {
+                    "query": q,
+                    "browser": b,
+                    "cooperative_chain": True,
+                    "open_in_browser": True,
+                    "explain_article": True,
+                }
+
+            # Search + explain target: "find [topic] and explain the second result"
+            _compound_explain_re = re.search(
+                r"^(?:find|search\s+(?:the\s+web\s+)?(?:for\s+)?|look\s+up|research)\s+(.+?)\s+and\s+(?:explain|summarize|tell\s+me\s+about|break\s+down)\s+(?:the\s+)?(first|second|third|1st|2nd|3rd|\d+)?\s*(?:result|article|finding|one|item)?",
+                text,
+                re.IGNORECASE,
+            )
+            if _compound_explain_re:
+                raw_q = _compound_explain_re.group(1).strip()
+                raw_q = re.sub(r"^(?:the\s+)", "", raw_q, flags=re.IGNORECASE).strip()
+                raw_target = _compound_explain_re.group(2) or "second"
+                idx = 1 if "second" in raw_target.lower() or "2" in raw_target else (0 if "first" in raw_target.lower() or "1" in raw_target else 2)
+                return {
+                    "query": raw_q,
+                    "target_index": idx,
+                    "explain_target": True,
+                }
+
             # --- P0 fix: compound "open [browser] and search for [query]" patterns ---
             _compound_browser_re = re.compile(
                 r"(?:open|launch|start)\s+(safari|chrome|firefox|edge|browser)\s+"

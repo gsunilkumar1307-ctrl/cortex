@@ -26,6 +26,8 @@ class TaskStatus(str, Enum):
     AWAITING_APPROVAL = "awaiting_approval"
     PAUSED_MODEL_UNAVAILABLE = "paused_model_unavailable"
     PAUSED_PERMISSION_REQUIRED = "paused_permission_required"
+    PAUSED = "paused"
+    WAITING_FOR_PERMISSION = "waiting_for_permission"
     RECOVERING = "recovering"
     VERIFYING = "verifying"
     NEEDS_ATTENTION = "needs_attention"
@@ -983,7 +985,12 @@ def command_from_intent(intent: str) -> TaskCommand:
         return TaskCommand.CLICK_ELEMENT
     if text.startswith(("type into ", "type in ", "fill in ")) and not any(w in text for w in ("browser", "web")):
         return TaskCommand.TYPE_IN_ELEMENT
-    if text.startswith(("open url ", "go to ", "visit ", "browse to ", "navigate to ")) or (("http://" in text or "https://" in text or ".com" in text or ".org" in text) and "open " in text):
+    if (
+        text.startswith(("open url ", "go to ", "visit ", "browse to ", "navigate to "))
+        or (("http://" in text or "https://" in text or ".com" in text or ".org" in text) and "open " in text)
+        or re.search(r"\bopen\s+(?:that|the|this|my|a)?\s*(?:second|first|third|2nd|1st|3rd)?\s*(?:article|result|link|page|url|story|post)\s*(?:in\s+)?(?:safari|chrome|firefox|browser)?\b", text, re.IGNORECASE)
+        or re.search(r"\bopen\s+that\s+article\b", text, re.IGNORECASE)
+    ):
         return TaskCommand.OPEN_URL
     if text.startswith(("click on web ", "browser click ", "click link ", "click element ", "web click ")):
         return TaskCommand.BROWSER_CLICK
