@@ -1049,7 +1049,13 @@ def command_from_intent(intent: str) -> TaskCommand:
 
     # ── Web Research / Safari Search ────────────────────────
     if (
-        re.search(r"\b(?:search\s+for|research|look\s+up|google)\b.*\b(?:in\s+safari|using\s+safari|on\s+safari)\b", text)
+        # Compound: "open/launch [browser] and search/find/research/look up [query]"
+        re.search(
+            r"\b(?:open|launch|start)\s+(?:safari|chrome|firefox|edge|browser)\s+"
+            r"and\s+(?:search\s+(?:the\s+web\s+)?(?:for\s+)?|look\s+up\s+|research\s+|find\s+|google\s+)",
+            text, re.IGNORECASE,
+        )
+        or re.search(r"\b(?:search\s+for|research|look\s+up|google)\b.*\b(?:in\s+safari|using\s+safari|on\s+safari)\b", text)
         or re.search(r"\bopen\s+safari\s+(?:and\s+|to\s+)(?:search\s+for|research|google|look\s+up)\b", text)
         or text.startswith("research ")
     ):
@@ -1062,6 +1068,13 @@ def command_from_intent(intent: str) -> TaskCommand:
     if text.startswith(("create document ", "new document ", "make document ")):
         return TaskCommand.CREATE_DOCUMENT
     if text.startswith(("google ", "search ", "search the web for ", "look up ")):
+        return TaskCommand.WEB_SEARCH
+
+    # "Find the latest / find recent / find news about ..." → web research (not file search)
+    if re.search(
+        r"^find\s+(?:the\s+)?(?:latest|recent|new|current|upcoming|top|best|info(?:rmation)?(?:\s+(?:about|on))?|news(?:\s+about)?|developments(?:\s+in)?)\b",
+        text, re.IGNORECASE,
+    ):
         return TaskCommand.WEB_SEARCH
 
     # ── Phase 7: Personal Assistant, Files & Calendar ──────

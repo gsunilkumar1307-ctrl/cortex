@@ -6,6 +6,8 @@ import json
 import re
 import sys
 import threading
+import subprocess
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -3181,7 +3183,10 @@ class CortexOrchestrator:
 
         if task.command == TaskCommand.WEB_SEARCH:
             query = task.params.get("query", task.intent)
-            is_safari = task.params.get("browser") == "Safari" or "safari" in task.intent.lower()
+            # Rely on explicit browser param set by _extract_params; avoid false-positive
+            # from "safari" appearing in the raw intent string (e.g. encyclopedia queries).
+            requested_browser = task.params.get("browser", "")
+            is_safari = requested_browser.lower() == "safari"
             task.add_event("web_search_started", f"Searching the web for: {query}")
 
             safari_opened = False
@@ -3740,8 +3745,25 @@ class CortexOrchestrator:
                 "attachments": attachments,
             }
         if command == TaskCommand.WEB_SEARCH:
+            # --- P0 fix: compound "open [browser] and search for [query]" patterns ---
+            _compound_browser_re = re.compile(
+                r"(?:open|launch|start)\s+(safari|chrome|firefox|edge|browser)\s+"
+                r"and\s+(?:search\s+(?:the\s+web\s+)?(?:for\s+)?|look\s+up\s+|research\s+|find\s+|google\s+)"
+                r"(.+)",
+                re.IGNORECASE,
+            )
+            _compound_m = _compound_browser_re.search(text)
+            if _compound_m:
+                raw_browser = _compound_m.group(1).strip().title()  # e.g. "Safari"
+                query = _compound_m.group(2).strip().rstrip(".").strip()
+                return {"query": query, "browser": raw_browser}
+
+            # Standard query stripping (non-compound forms)
             query = re.sub(r"^(?:google|search the web for|search for|search|look up|research)\s+", "", text, flags=re.IGNORECASE).strip()
             query = re.sub(r"\s+in\s+safari$", "", query, flags=re.IGNORECASE).strip()
+            # Detect explicit browser mention even in non-compound forms
+            _browser_mention = re.search(r"\bin\s+(safari|chrome|firefox|edge)\b", text, re.IGNORECASE)
+            browser_param: dict = {"browser": _browser_mention.group(1).title()} if _browser_mention else {}
             filter_m = re.search(r"^(.*?)\s+(?:under|below|less than|priced under|priced at most)\s+([₹$€£]?\s*[\d,]+.*)$", query, re.IGNORECASE)
             if filter_m:
                 clean_q = filter_m.group(1).strip()
@@ -3750,8 +3772,9 @@ class CortexOrchestrator:
                     "query": clean_q,
                     "filter": f"price <= {filter_val}",
                     "raw_query": query.rstrip("."),
+                    **browser_param,
                 }
-            return {"query": query if query else text}
+            return {"query": query if query else text, **browser_param}
         if command in {TaskCommand.READ_MAIL, TaskCommand.SUMMARIZE_MAIL}:
             unread_only = "unread" in text.lower()
             return {"limit": 5, "unread_only": unread_only}
