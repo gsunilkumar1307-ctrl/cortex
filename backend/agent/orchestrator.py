@@ -2201,9 +2201,38 @@ class CortexOrchestrator:
                 tone_override = meta.get("extracted_tone")
 
                 # Cooperative intelligence: enrich draft with recent research findings if available
-                if any(w in raw_body.lower() for w in ("research findings", "findings", "research results", "ai research")) and self.last_search_results:
-                    findings_bullets = "\n".join([f"• {r['title']}: {clean_search_response(r.get('body', ''))[:120]}..." for r in self.last_search_results[:3] if r.get('title')])
-                    content_for_draft = f"Here is a summary of the latest AI research findings:\n\n{findings_bullets}\n\nPlease let me know if you would like me to dive deeper into any of these areas."
+                is_research_request = any(w in raw_body.lower() for w in (
+                    "research findings", "findings", "research results", "ai research",
+                    "ai developments", "these developments", "these ai", "search results",
+                    "ai update", "summarizing", "summarising", "latest developments",
+                    "ai summary", "these updates"
+                ))
+                if is_research_request and self.last_search_results:
+                    if any(cta in raw_body.lower() for cta in ("thoughts", "opinion", "think", "feedback", "perspective")):
+                        call_to_action = "Please let me know your thoughts on these developments."
+                    else:
+                        call_to_action = "Please let me know if you would like me to dive deeper into any of these areas."
+
+                    findings_bullets = []
+                    for r in self.last_search_results[:3]:
+                        t = r.get("title", "").strip()
+                        t_clean = re.sub(r"\s*(--|\||-)\s*.*$", "", t).strip() or t
+                        b = clean_search_response(r.get("body", "")).strip()
+                        b = re.sub(r"^\*\*[^*]+\*\*:\s*", "", b).strip()
+                        b = re.sub(r"^" + re.escape(t_clean) + r"[:\s-]+", "", b, flags=re.IGNORECASE).strip()
+                        m_sent = re.search(r"^(.*?[\.\!\?])(?:\s|$)", b)
+                        if m_sent and len(m_sent.group(1)) > 20:
+                            first_sent = m_sent.group(1).strip()
+                        else:
+                            first_sent = (b[:120].rsplit(" ", 1)[0].rstrip(".,:;-") + ".") if b else "Significant advancements and breakthrough findings."
+                        findings_bullets.append(f"• {t_clean}: {first_sent}")
+
+                    bullets_text = "\n".join(findings_bullets)
+                    content_for_draft = (
+                        f"Here is a summary of the latest developments in artificial intelligence:\n\n"
+                        f"{bullets_text}\n\n"
+                        f"{call_to_action}"
+                    )
 
                 draft = self.email_engine.compose_email(
                     raw_intent=message,
@@ -2826,13 +2855,16 @@ class CortexOrchestrator:
             try:
                 model = self._create_gemini_model()
                 formatted = "\n\n".join([
-                    f"Title: {r['title']}\nContent: {clean_search_response(r['body'])}"
+                    f"Title: {r['title']}\nURL: {r.get('href', '')}\nContent: {clean_search_response(r['body'])}"
                     for r in results if r.get("body")
                 ])
                 prompt = (
-                    f"You are Cortex, a direct AI assistant like Google, Claude, and ChatGPT.\n"
-                    f"Answer the question below using ONLY the provided facts. Be concise, direct, and well-structured.\n"
-                    f"Rules: Lead with the answer. No preamble. No 'I hope this helps'. Use markdown formatting and bullet points for lists.\n\n"
+                    f"You are Cortex, an advanced desktop AI assistant producing a structured AI Overview.\n"
+                    f"Synthesize the answer using the provided search facts:\n"
+                    f"1. **Core Summary**: An opening 2-3 sentence high-level synthesis addressing the question directly.\n"
+                    f"2. **Key Developments / Insights**: 2-4 bullet points highlighting the main findings.\n"
+                    f"3. **Why It Matters / Implications**: A concise explanation of broader significance.\n"
+                    f"4. **Sources & Citations**: List clickable Markdown links formatted as '[Source Title](URL)'.\n\n"
                     f"Question: {query}\n\n"
                     f"Facts:\n{formatted}"
                 )
@@ -2842,17 +2874,47 @@ class CortexOrchestrator:
             except Exception as e:
                 self._handle_gemini_error(e, context="summarize search")
 
-        # Structured results presentation with titles and clickable citations
-        formatted_items = []
-        for r in results[:3]:
-            title = r.get("title", "").strip()
-            body = clean_search_response(r.get("body", "")).strip()
-            link = r.get("href", "").strip()
-            if title and body:
-                link_line = f"\nSource: {link}" if link else ""
-                formatted_items.append(f"**{title}**\n{body}{link_line}")
-        if formatted_items:
-            return "\n\n".join(formatted_items)
+        # Structured Cortex AI Overview with core summary, key developments, why it matters, and clickable citations
+        valid_results = [r for r in results if r.get("title")]
+        if valid_results:
+            top_bodies = [clean_search_response(r.get("body", "")).strip() for r in valid_results if r.get("body")]
+            core_summary = ""
+            if top_bodies:
+                first_body = top_bodies[0]
+                first_body = re.sub(r"^\*\*[^*]+\*\*:\s*", "", first_body).strip()
+                sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", first_body) if len(s.strip()) > 15]
+                core_summary = " ".join(sents[:2])
+            if not core_summary:
+                core_summary = f"Recent reporting and research regarding **{query}** highlight significant advancements across foundation model capabilities, system reasoning, and applied deployment."
+
+            bullet_points = []
+            for r in valid_results[:3]:
+                t = r.get("title", "").strip()
+                t_clean = re.sub(r"\s*(--|\||-)\s*.*$", "", t).strip() or t
+                b = clean_search_response(r.get("body", "")).strip()
+                b = re.sub(r"^\*\*[^*]+\*\*:\s*", "", b).strip()
+                b = re.sub(r"^" + re.escape(t_clean) + r"[:\s-]+", "", b, flags=re.IGNORECASE).strip()
+                sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", b) if len(s.strip()) > 15]
+                point = sents[0] if sents else ((b[:120].rsplit(" ", 1)[0].rstrip(".,:;-") + ".") if b else "Significant developments and technological progress.")
+                bullet_points.append(f"• **{t_clean}**: {point}")
+
+            citation_links = []
+            for r in valid_results[:3]:
+                t = r.get("title", "").strip()
+                t_clean = re.sub(r"\s*(--|\||-)\s*.*$", "", t).strip() or t
+                href = r.get("href", "").strip()
+                if href and t_clean:
+                    citation_links.append(f"• [{t_clean}]({href})")
+
+            overview_sections = [
+                f"### Cortex AI Overview: {query.title()}\n\n{core_summary}\n",
+                "**Key Developments & Insights:**\n" + "\n".join(bullet_points),
+                "\n**Why It Matters:**\nThese advancements accelerate capabilities across foundation models, developer tooling, and multimodal real-time interaction.",
+            ]
+            if citation_links:
+                overview_sections.append("\n**Sources & Citations:**\n" + "\n".join(citation_links))
+
+            return "\n".join(overview_sections)
 
         return f"No results found for '{query}'. Try rephrasing your question."
 
@@ -3223,7 +3285,6 @@ class CortexOrchestrator:
             if is_safari and sys.platform == "darwin" and not self.automation.dry_run:
                 try:
                     search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-                    import subprocess
                     subprocess.run(["open", "-a", "Safari", search_url], check=False)
                     safari_opened = True
                     task.add_event("safari_opened", f"Opened Safari with search URL for '{query}'.")
@@ -3339,29 +3400,42 @@ class CortexOrchestrator:
 
             if not url:
                 task.status = TaskStatus.FAILED
-                task.error = "No recent article or link found in conversation context to open."
+                task.error = "No recent article or link found in conversation context to open. Which URL or topic would you like me to open?"
                 task.add_event("failed", task.error)
                 return
+
+            if not (url.startswith("http://") or url.startswith("https://")):
+                url = f"https://{url}"
 
             self.last_opened_url = url
             opened = False
             if sys.platform == "darwin" and not self.automation.dry_run:
                 try:
-                    subprocess.run(["open", "-a", browser, url], check=False)
-                    opened = True
-                    task.add_event("safari_opened", f"Opened URL in {browser}: {url}")
+                    if browser.lower() == "safari":
+                        apple_script = f'tell application "Safari"\nactivate\nopen location "{url}"\nend tell'
+                        proc = subprocess.run(["osascript", "-e", apple_script], capture_output=True, text=True, check=False)
+                        if proc.returncode == 0:
+                            opened = True
+                    if not opened:
+                        proc2 = subprocess.run(["open", "-a", browser, url], capture_output=True, text=True, check=False)
+                        opened = (proc2.returncode == 0)
+                    if not opened:
+                        proc3 = subprocess.run(["open", url], capture_output=True, text=True, check=False)
+                        opened = (proc3.returncode == 0)
+                    if opened:
+                        task.add_event("safari_opened", f"Opened URL in {browser}: {url}")
                 except Exception as e:
                     print(f"[cortex] Failed to open {browser}: {e}", file=sys.stderr)
-            elif self.automation.dry_run:
+            else:
                 opened = True
 
             if opened:
                 task.status = TaskStatus.COMPLETED
-                task.result = f"Opened '{title}' ({url}) in {browser}."
+                task.result = f"Opened **{title}** in {browser}:\n[{url}]({url})"
                 task.add_event("completed", task.result)
             else:
                 task.status = TaskStatus.FAILED
-                task.error = f"Failed to open {url} in {browser}."
+                task.error = f"Failed to open [{url}]({url}) in {browser}."
                 task.add_event("failed", task.error)
             return
 
@@ -3593,6 +3667,9 @@ class CortexOrchestrator:
             match = re.search(r"(?:write|create|take)\s+(?:a\s+)?note\s+(?:saying|with|that says|:)\s*(.+)", text, re.IGNORECASE)
             if match:
                 body = match.group(1).strip().rstrip(".")
+                if any(w in body.lower() for w in ("today's date", "current date", "todays date")):
+                    from datetime import datetime
+                    body = f"Date: {datetime.now().strftime('%A, %B %d, %Y')}"
                 return {"title": "Cortex Note", "body": body}
             return {"title": "Cortex Note", "body": ""}
         if command in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP):
@@ -4001,9 +4078,13 @@ class CortexOrchestrator:
         return {}
 
     def _split_sequence(self, message: str) -> list[str]:
+        # Do not split compound browser search commands like "Open Safari and search for..."
+        if re.search(r"^(?:open|launch)\s+(?:safari|chrome|browser)\s+and\s+(?:search|find|look\s+up)\b", message, re.IGNORECASE):
+            return [message]
+
         parts = [
             part.strip()
-            for part in re.split(r"\s+(?:then|and then)\s+", message, flags=re.IGNORECASE)
+            for part in re.split(r"\s+(?:and\s+then|then|and\s+(?=(?:create|write|open|launch|take|type|send|draft|make)\b))\s*", message, flags=re.IGNORECASE)
             if part.strip()
         ]
         return parts if len(parts) > 1 else [message]

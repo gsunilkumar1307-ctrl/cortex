@@ -16,13 +16,14 @@ APPROVAL_REQUIRED = {
     TaskCommand.SEND_MAIL,       # sending emails directly requires explicit approval
 }
 
-BLOCKED_TERMS = (
-    "delete file",
-    "delete folder",
-    "submit form",
-    "payment",
-    "buy ",
-    "purchase",
+BLOCKED_PATTERNS = (
+    r"\b(?:delete|remove|erase|wipe|destroy|format|purge)\s+(?:system\s+files?|system\s+data|all\s+files?|files?|folders?|directories|directory|disk|drive)\b",
+    r"\b(?:delete|remove|erase|wipe|format)\s+[\"']?(?:/System|/etc|/usr|/bin|/sbin|/var|/Library|C:\\Windows)\b",
+    r"\b(?:rm\s+-rf|format\s+[c-z]:)\b",
+    r"\bsubmit\s+form\b",
+    r"\bpayment\b",
+    r"\bbuy\s+",
+    r"\bpurchase\b",
 )
 
 LOW_RISK_COMMANDS = {
@@ -61,13 +62,29 @@ def classify_command(command: TaskCommand, intent: str) -> tuple[RiskLevel, bool
         if any(word in text for word in consequential_targets):
             return RiskLevel.HIGH, True, f"Clicking consequential UI element matching '{text}' requires explicit user approval."
 
-    if command in {TaskCommand.WRITE_NOTE, TaskCommand.DRAFT_MAIL, TaskCommand.WRITE_FILE}:
-        content_blocked = ("delete file", "delete folder")
-        if any(term in text for term in content_blocked):
-            return RiskLevel.BLOCKED, False, "This action is outside the MVP safety boundary."
-    else:
-        if any(term in text for term in BLOCKED_TERMS):
-            return RiskLevel.BLOCKED, False, "This action is outside the MVP safety boundary."
+    import re
+
+    # 1. Deletion of files and folders is blocked across all commands
+    file_deletion_patterns = (
+        r"\b(?:delete|remove|erase|wipe|destroy|format|purge)\s+(?:system\s+files?|system\s+data|all\s+files?|files?|folders?|directories|directory|disk|drive)\b",
+        r"\b(?:delete|remove|erase|wipe|format)\s+[\"']?(?:/System|/etc|/usr|/bin|/sbin|/var|/Library|C:\\Windows)\b",
+        r"\b(?:rm\s+-rf|format\s+[c-z]:)\b",
+    )
+    for pattern in file_deletion_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return RiskLevel.BLOCKED, False, "This action is outside the Cortex safety boundary and has been blocked."
+
+    # 2. For notes, email drafts, and file writes, do not block conversational terms like 'buy milk'
+    if command not in {TaskCommand.WRITE_NOTE, TaskCommand.DRAFT_MAIL, TaskCommand.WRITE_FILE}:
+        commerce_blocked_patterns = (
+            r"\bsubmit\s+form\b",
+            r"\bpayment\b",
+            r"\bbuy\s+",
+            r"\bpurchase\b",
+        )
+        for pattern in commerce_blocked_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return RiskLevel.BLOCKED, False, "This action is outside the Cortex safety boundary and has been blocked."
 
     if command == TaskCommand.UNKNOWN:
         return RiskLevel.LOW, False, None

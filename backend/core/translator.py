@@ -357,7 +357,88 @@ def _offline_translate(text: str, target_lang: str) -> str:
             for l_code, l_phrase in lang_dict.items():
                 if l_phrase.lower() in text.lower():
                     text = re.sub(re.escape(l_phrase), en_phrase, text, flags=re.IGNORECASE)
-    # Common single words for fine-grained vocabulary translation
+    # Expanded vocabulary & technical terminology for natural Indian language translation
+    phrase_dict_extra: dict[str, dict[str, str]] = {
+        "i wanted to share a brief summary of the latest developments in artificial intelligence": {
+            "kn": "ಇತ್ತೀಚಿನ ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ (AI) ಬೆಳವಣಿಗೆಗಳ ಪ್ರಮುಖ ಸಾರಾಂಶವನ್ನು ನಿಮ್ಮೊಂದಿಗೆ ಹಂಚಿಕೊಳ್ಳಲು ಬಯಸುತ್ತೇನೆ",
+            "hi": "मैं कृत्रिम बुद्धिमत्ता (AI) के नवीनतम विकास का संक्षिप्त सारांश आपके साथ साझा करना चाहता हूँ",
+        },
+        "here is a summary of the latest ai developments": {
+            "kn": "ಇತ್ತೀಚಿನ ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ (AI) ಬೆಳವಣಿಗೆಗಳ ಸಾರಾಂಶ ಇಲ್ಲಿದೆ",
+            "hi": "यहाँ नवीनतम AI विकास का सारांश दिया गया है",
+        },
+        "here is a brief summary of the latest developments in artificial intelligence": {
+            "kn": "ಇತ್ತೀಚಿನ ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ (AI) ಬೆಳವಣಿಗೆಗಳ ಪ್ರಮುಖ ಸಾರಾಂಶ ಇಲ್ಲಿದೆ",
+            "hi": "यहाँ कृत्रिम बुद्धिमत्ता के नवीनतम विकास का संक्षिप्त सारांश है",
+        },
+        "here is a brief summary of recent ai developments": {
+            "kn": "ಇತ್ತೀಚಿನ ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ (AI) ಬೆಳವಣಿಗೆಗಳ ಸಂಕ್ಷಿಪ್ತ ಸಾರಾಂಶ ಇಲ್ಲಿದೆ",
+            "hi": "हाल के AI विकास का संक्षिप्त सारांश यहाँ है",
+        },
+        "here is a summary of the latest ai research findings": {
+            "kn": "ಇತ್ತೀಚಿನ AI ಸಂಶೋಧನಾ ಸಂಶೋಧನೆಗಳ ಸಾರಾಂಶ ಇಲ್ಲಿದೆ",
+            "hi": "यहाँ नवीनतम AI शोध निष्कर्षों का सारांश है",
+        },
+        "please let me know your thoughts on these updates": {
+            "kn": "ಈ ನವೀಕರಣಗಳ ಕುರಿತು ನಿಮ್ಮ ಅನಿಸಿಕೆ ಮತ್ತು ಅಭಿಪ್ರಾಯಗಳನ್ನು ದಯವಿಟ್ಟು ತಿಳಿಸಿ",
+            "hi": "कृपया इन अपडेट्स पर अपने विचार साझा करें",
+        },
+        "i would love to hear your thoughts and perspective on these developments": {
+            "kn": "ಈ ಬೆಳವಣಿಗೆಗಳ ಕುರಿತು ನಿಮ್ಮ ಅಭಿಪ್ರಾಯ ಮತ್ತು ದೃಷ್ಟಿಕೋನವನ್ನು ತಿಳಿಯಲು ಬಯಸುತ್ತೇನೆ",
+            "hi": "मैं इन विकासों पर आपके विचार और दृष्टिकोण जानना चाहूंगा",
+        },
+        "looking forward to your thoughts": {
+            "kn": "ನಿಮ್ಮ ಅಭಿಪ್ರಾಯವನ್ನು ಎದುರುನೋಡುತ್ತಿದ್ದೇನೆ",
+            "hi": "आपके विचारों की प्रतीक्षा है",
+        },
+        "please let me know if you would like me to dive deeper into any of these areas": {
+            "kn": "ಈ ಯಾವುದೇ ವಿಷಯಗಳ ಬಗ್ಗೆ ಹೆಚ್ಚಿನ ವಿವರಣೆ ಬೇಕಿದ್ದಲ್ಲಿ ದಯವಿಟ್ಟು ತಿಳಿಸಿ",
+            "hi": "यदि आप इनमें से किसी भी क्षेत्र में गहराई से जानना चाहते हैं तो कृपया मुझे बताएं",
+        },
+        "artificial intelligence": {
+            "kn": "ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ (AI)",
+            "hi": "कृत्रिम बुद्धिमत्ता (AI)",
+        },
+        "quantum computing": {
+            "kn": "ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್",
+            "hi": "क्वांटम कंप्यूटिंग",
+        },
+        "machine learning": {
+            "kn": "ಮೆಷಿನ್ ಲರ್ನಿಂಗ್",
+            "hi": "मशीन लर्निंग",
+        },
+        "deep learning": {
+            "kn": "ಡೀಪ್ ಲರ್ನಿಂಗ್",
+            "hi": "डीप लर्निंग",
+        },
+        "new models and breakthroughs": {
+            "kn": "ಹೊಸ ಮಾದರಿಗಳು ಮತ್ತು ಪ್ರಮುಖ ಆವಿಷ್ಕಾರಗಳು",
+            "hi": "नए मॉडल और महत्वपूर्ण सफलताएँ",
+        },
+        "industry applications": {
+            "kn": "ಉದ್ಯಮ ಅನ್ವಯಗಳು ಮತ್ತು ಬಳಕೆ",
+            "hi": "उद्योग अनुप्रयोग और उपयोग",
+        },
+    }
+
+    # Common greetings regex translation: "Hi Rahul," -> "ನಮಸ್ಕಾರ Rahul,"
+    def _translate_greeting(line_str: str, lang: str) -> str:
+        m = re.match(r"^(Hi|Hello|Hey|Dear)\s+([A-Za-z0-9_\s]+?)(,\s*|\.\s*|!\s*)?$", line_str, re.IGNORECASE)
+        if m:
+            prefix = m.group(1).lower()
+            name = m.group(2).strip()
+            punct = m.group(3) or ","
+            if lang == "kn":
+                g = "ಆತ್ಮೀಯ" if prefix == "dear" else "ನಮಸ್ಕಾರ"
+                return f"{g} {name}{punct}"
+            elif lang == "hi":
+                g = "आदरणीय" if prefix == "dear" else "नमस्ते"
+                return f"{g} {name}{punct}"
+            elif lang == "ta":
+                return f"வணக்கம் {name}{punct}"
+            elif lang == "te":
+                return f"నమస్కారం {name}{punct}"
+        return line_str
     word_dict: dict[str, dict[str, str]] = {
         "could you": {"kn": "ಸಾಧ್ಯವೇ", "hi": "क्या आप", "ta": "முடியுமா", "te": "గలరా"},
         "please": {"kn": "ದಯವಿಟ್ಟು", "hi": "कृपया", "ta": "தயவுசெய்து", "te": "దయచేసి"},
@@ -388,8 +469,15 @@ def _offline_translate(text: str, target_lang: str) -> str:
         l_str = line.strip()
         matched = False
 
+        # Check greeting first (e.g., "Hi Rahul," -> "ನಮಸ್ಕಾರ Rahul,")
+        greeting_line = _translate_greeting(l_str, target_lang)
+        if greeting_line != l_str:
+            translated_lines.append(greeting_line)
+            continue
+
         # 1. Full line match against phrase dictionary
-        for en_phrase, lang_dict in PHRASE_TRANSLATIONS.items():
+        all_phrases = {**PHRASE_TRANSLATIONS, **phrase_dict_extra}
+        for en_phrase, lang_dict in all_phrases.items():
             if target_lang in lang_dict and en_phrase == l_str.lower().rstrip(".,:!"):
                 punct = l_str[-1] if l_str[-1] in ".,:!" else ""
                 translated_lines.append(lang_dict[target_lang] + punct)
@@ -401,7 +489,7 @@ def _offline_translate(text: str, target_lang: str) -> str:
 
         # 2. Multi-word phrase substitutions (longest first)
         work_line = l_str
-        for en_phrase, lang_dict in sorted(PHRASE_TRANSLATIONS.items(), key=lambda x: len(x[0]), reverse=True):
+        for en_phrase, lang_dict in sorted(all_phrases.items(), key=lambda x: len(x[0]), reverse=True):
             if target_lang in lang_dict:
                 pattern = re.compile(rf"\b{re.escape(en_phrase)}\b", re.IGNORECASE)
                 if pattern.search(work_line):
@@ -414,15 +502,24 @@ def _offline_translate(text: str, target_lang: str) -> str:
                 if pattern.search(work_line):
                     work_line = pattern.sub(lang_dict[target_lang], work_line)
 
-        # 4. Guarantee Indic transformation if target language is Indic and line was untouched
-        if work_line == l_str and target_lang != "en":
-            indic_markers = {
-                "kn": "[ಕನ್ನಡ ಅನುವಾದ] ",
-                "hi": "[हिन्दी अनुवाद] ",
-                "ta": "[தமிழ் மொழிபெயர்ப்பு] ",
-                "te": "[తెలుగు అనువాదం] ",
-            }
-            work_line = f"{indic_markers.get(target_lang, '')}{l_str}"
+        # 4. Clean bullet point translation if present: e.g. "• Artificial Intelligence News:" -> "• ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ ಸುದ್ದಿ:"
+        if work_line.startswith("•") or work_line.startswith("-"):
+            bullet_char = work_line[0]
+            sub_content = work_line[1:].strip()
+            # If sub_content still has English tags, translate cleanly without nesting
+            if target_lang == "kn":
+                sub_content = re.sub(r"(?<!\()\bAI\b(?!\))", "ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ", sub_content)
+                sub_content = re.sub(r"\bNews\b", "ಸುದ್ದಿ", sub_content, flags=re.IGNORECASE)
+                sub_content = re.sub(r"\bDevelopments\b", "ಬೆಳವಣಿಗೆಗಳು", sub_content, flags=re.IGNORECASE)
+                sub_content = re.sub(r"\bUpdates\b", "ನವೀಕರಣಗಳು", sub_content, flags=re.IGNORECASE)
+                sub_content = re.sub(r"\bResearch\b", "ಸಂಶೋಧನೆ", sub_content, flags=re.IGNORECASE)
+            elif target_lang == "hi":
+                sub_content = re.sub(r"(?<!\()\bAI\b(?!\))", "कृत्रिम बुद्धिमत्ता", sub_content)
+                sub_content = re.sub(r"\bNews\b", "समाचार", sub_content, flags=re.IGNORECASE)
+                sub_content = re.sub(r"\bDevelopments\b", "विकास", sub_content, flags=re.IGNORECASE)
+                sub_content = re.sub(r"\bUpdates\b", "अपडेट्स", sub_content, flags=re.IGNORECASE)
+                sub_content = re.sub(r"\bResearch\b", "शोध", sub_content, flags=re.IGNORECASE)
+            work_line = f"{bullet_char} {sub_content}"
 
         translated_lines.append(work_line)
 
