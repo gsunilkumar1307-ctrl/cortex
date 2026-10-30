@@ -389,6 +389,22 @@ class ProfessionalEmailEngine:
         text = re.sub(r"\s+", " ", text).strip()
 
         def _wrap(raw_rec: str, subj: str, content: str) -> dict[str, Any]:
+            content = re.sub(
+                r"(?:[.,;—–-]\s*)?"
+                r"(?:do\s+not\s+send\s*(?:it|this|anything)?|"
+                r"dont\s+send\s*(?:it|this|anything)?|"
+                r"don'?t\s+send\s*(?:it|this|anything)?|"
+                r"never\s+send\s*(?:it|this|anything)?|"
+                r"without\s+sending(?:\s+it|\s+anything)?|"
+                r"draft\s+only|"
+                r"just\s+draft(?:\s+it)?|"
+                r"only\s+draft|"
+                r"show\s+me\s+the\s+exact\s+recipient\s+and\s+message.*)"
+                r"[.,;!?]?\s*$",
+                "",
+                content,
+                flags=re.IGNORECASE,
+            ).strip()
             return {
                 "recipient": raw_rec,
                 "subject": subj,
@@ -403,7 +419,7 @@ class ProfessionalEmailEngine:
 
         # Pattern 0C: send/draft email (NO recipient in prompt) saying/asking/requesting <content>
         p0c = re.search(
-            r"^(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|:)\s+(.+)",
+            r"^(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|:)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -463,7 +479,7 @@ class ProfessionalEmailEngine:
 
         # Pattern 2: send/draft email to <recipient> saying/body/that says/asking/requesting <content>
         p2 = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|:)\s+(.+)",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|:)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -674,7 +690,7 @@ class ProfessionalEmailEngine:
 
         text = purpose_or_content.strip()
         clean_text = re.sub(
-            r"^(?:send|draft|write|mail)\s+(?:an?\s+)?(?:email|mail)\s+(?:to\s+)?[^,\n]+?\s+(?:saying|that|with|:)\s+",
+            r"^(?:send|draft|write|mail)\s+(?:an?\s+)?(?:email|mail)\s+(?:to\s+)?[^,\n]+?\s+(?:saying|explaining|asking|informing|requesting|telling|that|with|:)\s+",
             "",
             text,
             flags=re.IGNORECASE,
@@ -727,6 +743,10 @@ class ProfessionalEmailEngine:
         # 6. Meeting
         if any(w in clean_lower for w in ("meeting details", "meeting link", "agenda")) or clean_lower.startswith("meeting"):
             return "Inquiry regarding Upcoming Meeting Details"
+        if ("cannot attend" in clean_lower or "unable to attend" in clean_lower or "miss" in clean_lower) and "meeting" in clean_lower:
+            return "Unable to Attend Tomorrow's Meeting" if "tomorrow" in clean_lower else "Unable to Attend Meeting"
+        if "meeting" in clean_lower:
+            return "Update regarding Tomorrow's Meeting" if "tomorrow" in clean_lower else "Meeting Update"
 
         # 7. Document / Certificate / Academic Records Request
         if any(w in clean_lower for w in ("document", "certificate", "marks card", "original college document", "transcript")):

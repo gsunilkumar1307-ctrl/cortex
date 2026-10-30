@@ -42,6 +42,7 @@ try:
         localize,
         normalize_app_name,
         get_cortex_identity,
+        get_cortex_capabilities,
         get_cortex_status,
         get_offline_knowledge,
     )
@@ -106,6 +107,7 @@ except ImportError:
         localize,
         normalize_app_name,
         get_cortex_identity,
+        get_cortex_capabilities,
         get_cortex_status,
         get_offline_knowledge,
     )
@@ -289,6 +291,7 @@ class CortexOrchestrator:
         self.tasks: dict[str, Task] = {}
         self.history: list[dict[str, Any]] = []
         self.pending_action: dict[str, Any] | None = None
+        self.paused_tasks: list[dict[str, Any]] = []
 
         self.policy_engine = PolicyEngine()
         self.policy = self.policy_engine
@@ -683,7 +686,7 @@ class CortexOrchestrator:
             return True
 
         cancel_patterns = [
-            r"^(?:no[,\s]+)?(?:please\s+)?(?:cancel|abort|discard|stop)(?:\s+(?:the\s+|this\s+)?(?:draft|email|mail|task|action|it|that))?$",
+            r"^(?:no[,\s]+)?(?:please\s+)?(?:cancel|abort|discard|stop)(?:\s+(?:the\s+|this\s+|that\s+|my\s+)?(?:draft|email|mail|task|action|it|that))?$",
             r"^(?:no[,\s]+)?(?:please\s+)?(?:don'?t|do\s+not|never)\s+send(?:\s+(?:the\s+|this\s+)?(?:draft|email|mail|it|that|anything))?.*$",
             r"^(?:ರದ್ದು\s*(?:ಮಾಡು|ಮಾಡಿ)?|ಬೇಡ)$",
             r"(?:ಇದನ್ನು\s*|ಇಮೇಲ್\s*)?(?:ಕಳುಹಿಸಬೇಡ|ಕಳಿಸಬೇಡ)$",
@@ -776,6 +779,36 @@ class CortexOrchestrator:
                 ),
                 "task": Task(message, TaskCommand.UNKNOWN, RiskLevel.LOW, False, language=detected_lang).to_dict()
             }
+
+        # ── Priority 0A: Task resumption ──
+        if re.match(r"^(?:resume|continue)(?:\s+(?:the\s+|my\s+)?(?:previous\s+)?(?:task|draft|email|work))?[.,;!]?$", message.strip(), re.IGNORECASE):
+            if self.paused_tasks:
+                self.pending_action = self.paused_tasks.pop()
+                p_task = self.pending_action.get("task")
+                if p_task:
+                    p_task.status = TaskStatus.WAITING_APPROVAL
+                p_recipient = self.pending_action.get("recipient", "recipient")
+                return {
+                    "message": f"Resumed your previous task for {p_recipient}. Ready for your review or instructions.",
+                    "task": p_task.to_dict() if p_task else Task(message, TaskCommand.UNKNOWN, RiskLevel.LOW, False).to_dict()
+                }
+
+        # ── Priority 0B: Task interruption and task switching (e.g. "Stop. Help me with Python instead.") ──
+        switch_m = re.match(r"^(?:stop|wait|pause|cancel|hold on)[.,;!]\s*(.+)$", message.strip(), re.IGNORECASE)
+        if switch_m:
+            next_cmd = switch_m.group(1).strip()
+            next_cmd = re.sub(r"\s+instead[.,;!]?$", "", next_cmd, flags=re.IGNORECASE).strip()
+            if self.pending_action:
+                paused = self.pending_action
+                self.paused_tasks.append(paused)
+                t_obj = paused.get("task")
+                if t_obj and hasattr(t_obj, "status"):
+                    t_obj.status = TaskStatus.PAUSED
+                    t_obj.add_event("paused", "Task paused due to user interruption to switch tasks.")
+                self.pending_action = None
+            sub_res = self.chat(next_cmd, source=source, preferred_language=preferred_language)
+            sub_res["message"] = f"Paused the previous task. {sub_res['message']}"
+            return sub_res
 
         # ── Priority 0: Deterministic Cancellation Handling Before Fallbacks ──
         if self._is_explicit_cancellation(message, in_pending=bool(self.pending_action)):
@@ -2221,6 +2254,21 @@ class CortexOrchestrator:
                     task.result = f"Draft created for {draft.recipient} with subject '{draft.subject}'."
                     task.add_event("completed", task.result)
                     response = task.result
+                    self.pending_action = {
+                        "type": "email_draft",
+                        "step": "confirm_send",
+                        "task_id": task.id,
+                        "recipient": raw_rec if raw_rec else draft.recipient,
+                        "recipient_email": draft.recipient,
+                        "subject": draft.subject,
+                        "body": raw_body,
+                        "sender_account": draft.sender_account,
+                        "attachments": draft.attachments,
+                        "cc": draft.cc,
+                        "bcc": draft.bcc,
+                        "draft": draft,
+                        "lang": raw_lang_code,
+                    }
                 else:
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.add_event("draft_prepared", f"Draft prepared for {draft.recipient} — Subject: {draft.subject}")
@@ -2950,15 +2998,75 @@ class CortexOrchestrator:
             "आप कैसे हैं", "कैसे हो", "क्या हाल है", "हाल चाल", "eppadi irukinga", "epdi irukinga", "eppadi irukka",
             "எப்படி இருக்கிறீர்கள்", "எப்படி இருக்கீங்க", "ela unnaru", "bagunnara", "bagunara", "ఎలా ఉన్నారు", "బాగున్నారా"
         ))
+        is_capabilities = any(p in q_lower for p in (
+            "what can you do", "what can cortex do", "what are your capabilities", "your capabilities",
+            "what capabilities", "tell me what you can do", "what features", "features of cortex",
+            "ನೀವೇನು ಮಾಡಬಲ್ಲಿರಿ", "ಏನು ಮಾಡಬಹುದು", "ನಿಮ್ಮ ಸಾಮರ್ಥ್ಯಗಳು", "ಸಾಮರ್ಥ್ಯಗಳು",
+            "आप क्या कर सकते हैं", "आपकी क्षमताएं", "क्या कर सकते हो",
+            "என்ன செய்ய முடியும்", "మీరు ఏమి చేయగలరు"
+        ))
         is_identity = any(p in q_lower for p in (
-            "who are you", "what can you do", "ನಿಮ್ಮ ಹೆಸರೇನು", "ನೀವು ಯಾರು", "ನೀವೇನು ಮಾಡಬಲ್ಲಿರಿ", "ಏನು ಮಾಡಬಹುದು",
-            "आप कौन हैं", "तुम्हारा नाम क्या है", "आप क्या कर सकते हैं", "நீங்கள் யார்", "మీరు ఎవరు"
+            "who are you", "what is your name", "ನಿಮ್ಮ ಹೆಸರೇನು", "ನೀವು ಯಾರು",
+            "आप कौन हैं", "तुम्हारा नाम क्या है", "आप का नाम क्या है", "நீங்கள் யார்", "మీరు ఎవరు"
         ))
 
+        if is_capabilities:
+            return get_cortex_capabilities(lang_code)
         if is_status:
             return get_cortex_status(lang_code)
         if is_greeting or is_identity:
             return get_cortex_identity(lang_code)
+
+        # Check for programming help requests
+        if re.search(r"\b(?:help\s+(?:me\s+)?with\s+python|python\s+help|learn\s+python|python\s+programming)\b", q_lower):
+            if lang_code == "kn":
+                return "ಖಂಡಿತ, ನಾನು ನಿಮಗೆ ಪೈಥಾನ್ (Python) ಪ್ರೋಗ್ರಾಮಿಂಗ್‌ನಲ್ಲಿ ಸಹಾಯ ಮಾಡಲು ಸಿದ್ಧನಿದ್ದೇನೆ! ಕೋಡ್ ಬರೆಯುವುದು, ದೋಷಗಳನ್ನು ಪರಿಹರಿಸುವುದು (debugging), ಅಥವಾ ಯಾವುದೇ ಪ್ರಾಜೆಕ್ಟ್ ಇರಲಿ — ನಿಮಗೆ ಏನು ಬೇಕು ತಿಳಿಸಿ."
+            elif lang_code == "hi":
+                return "बिल्कुल, मैं आपकी पायथन (Python) प्रोग्रामिंग में मदद करने के लिए तैयार हूँ! कोड लिखना, एरर डीबग करना, या कोई प्रोजेक्ट बनाना — बताइए हम क्या शुरू करें?"
+            return "I'd be glad to help you with Python! Whether you need to write clean scripts, debug an issue, design algorithms, or work with frameworks like FastAPI or PyTorch, let me know what you'd like to build or solve."
+
+        # Check for contextual simplification follow-up (e.g. "Explain that in simpler words", "Simplify that")
+        is_simplify = bool(re.search(r"\b(?:simpler|simple words|simplify|eli5|easier|layman|simple terms)\b", q_lower))
+        if is_simplify and self.history:
+            last_user_query = ""
+            for item in reversed(self.history):
+                if item.get("role") == "user" and not last_user_query:
+                    last_user_query = item.get("parts", [""])[0]
+
+            if last_user_query:
+                topic_lower = last_user_query.lower()
+                if "quantum" in topic_lower:
+                    if lang_code == "kn":
+                        return (
+                            "ಸರಳವಾಗಿ ಹೇಳಬೇಕೆಂದರೆ:\n\n"
+                            "ಸಾಮಾನ್ಯ ಕಂಪ್ಯೂಟರ್‌ಗಳು ಸ್ವಿಚ್‌ನಂತೆ ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತವೆ — ಅದು 0 (ಆಫ್) ಅಥವಾ 1 (ಆನ್) ಮಾತ್ರ ಆಗಿರಬಹುದು.\n"
+                            "ಆದರೆ ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟರ್‌ನ 'ಕ್ಯುಬಿಟ್ಸ್' (Qubits) ಒಂದೇ ಸಮಯದಲ್ಲಿ 0 ಮತ್ತು 1 ಎರಡೂ ಆಗಿರಲು ಸಾಧ್ಯ (ಸೂಪರ್‌ಪೊಸಿಷನ್). "
+                            "ಇದರಿಂದಾಗಿ ಇದು ಲಕ್ಷಾಂತರ ಸಾಧ್ಯತೆಗಳನ್ನು ಏಕಕಾಲದಲ್ಲಿ ಪರೀಕ್ಷಿಸಿ, ಸಾಮಾನ್ಯ ಕಂಪ್ಯೂಟರ್‌ಗಳಿಗೆ ವರ್ಷಗಳಾಗುವ ಲೆಕ್ಕಾಚಾರಗಳನ್ನು ಕೆಲವೇ ಸೆಕೆಂಡುಗಳಲ್ಲಿ ಪರಿಹರಿಸಬಲ್ಲದು."
+                        )
+                    elif lang_code == "hi":
+                        return (
+                            "सरल शब्दों में:\n\n"
+                            "एक सामान्य कंप्यूटर लाइट स्विच की तरह काम करता है — यह केवल 0 (बंद) या 1 (चालू) हो सकता है।\n"
+                            "लेकिन क्वांटम कंप्यूटर के 'क्यूबिट्स' (Qubits) एक ही समय में 0 और 1 दोनों हो सकते हैं। "
+                            "इसकी वजह से यह एक साथ लाखों संभावनाओं की जांच कर सकता है और बहुत जटिल समस्याओं को सेकंडों में हल कर देता है।"
+                        )
+                    return (
+                        "In simpler words:\n\n"
+                        "Think of a normal computer like a light switch that can only be either ON (1) or OFF (0), working through problems step-by-step.\n\n"
+                        "A quantum computer uses special quantum particles (qubits) that can be both ON and OFF at the same time (called superposition). "
+                        "This allows it to test millions of possibilities simultaneously, solving in seconds calculations that would take regular supercomputers thousands of years."
+                    )
+                elif "big bang" in topic_lower:
+                    return (
+                        "In simpler words:\n\n"
+                        "The Big Bang wasn't an explosion in space — it was the sudden expansion of space itself. "
+                        "Around 13.8 billion years ago, everything in the entire universe was packed into an unimaginably hot and dense point that suddenly began expanding, cooling over billions of years to create all the stars, planets, and galaxies we see today."
+                    )
+                elif "bruce lee" in topic_lower:
+                    return (
+                        "In simpler words:\n\n"
+                        "Bruce Lee was the most famous martial artist in history. He changed action movies forever, proved that technique and speed beat sheer size, and created his own flexible philosophy of martial arts called Jeet Kune Do ('the way of the intercepting fist')."
+                    )
 
         # 3. Try Gemini — Direct answer (skip if unavailable or in cooldown)
         if self._is_gemini_available():

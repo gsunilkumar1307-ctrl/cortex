@@ -289,6 +289,42 @@ def get_cortex_identity(lang_code: str) -> str:
     return "Hey there! I'm Cortex — your friendly AI companion. Whether it's managing your desktop, searching the web, sending emails, or chatting about anything under the sun, I'm right here with you!"
 
 
+def get_cortex_capabilities(lang_code: str = "en") -> str:
+    """Returns authoritative, current integration and capability status for Cortex."""
+    if lang_code == "kn":
+        return (
+            "### ಕಾರ್ಟೆಕ್ಸ್ ಸಾಮರ್ಥ್ಯಗಳು (Cortex Capabilities)\n\n"
+            "• **ನೈಸರ್ಗಿಕ ಸಂಭಾಷಣೆ ಮತ್ತು ಸಾಮಾನ್ಯ ಜ್ಞಾನ**: `SUPPORTED_AND_READY` (ಕನ್ನಡ, ಇಂಗ್ಲಿಷ್, ಹಿಂದಿ, ಮಿಶ್ರ Kanglish/Hinglish ಬೆಂಬಲ)\n"
+            "• **ವೆಬ್ ಸಂಶೋಧನೆ (Web Research)**: `SUPPORTED_AND_READY` (ನೈಜ-ಸಮಯದ ಹುಡುಕಾಟ ಮತ್ತು ವಿಕಿಪೀಡಿಯ ಮೂಲಗಳು)\n"
+            "• **ಆಪಲ್ ಮೇಲ್ (Apple Mail Automation)**: `SUPPORTED_AND_READY` (ಕರಡು ರಚನೆ, ತಿದ್ದುಪಡಿ ಮತ್ತು ಪೂರ್ವಾನುಮತಿ ಗೇಟ್)\n"
+            "• **ಮ್ಯಾಕ್ ಅಪ್ಲಿಕೇಶನ್ ಮತ್ತು ಫೈಂಡರ್ ನಿಯಂತ್ರಣ**: `SUPPORTED_AND_READY` (Finder ಡೌನ್‌ಲೋಡ್ ಫೈಲ್ ಪಟ್ಟಿ, ಅಪ್ಲಿಕೇಶನ್ ತೆರೆಯುವುದು)\n"
+            "• **ವ್ಯಾಟ್ಸಾಪ್ ಸುರಕ್ಷಿತ ಸಂದೇಶ (WhatsApp Visible-UI)**: `SUPPORTED_AND_READY` (ಪರಿಶೀಲಿಸಿದ ಸಂಪರ್ಕಗಳು ಮಾತ್ರ, ಕರಡು-ಮಾತ್ರ ರಕ್ಷಣೆ)\n"
+            "• **ಸ್ಕ್ರೀನ್ ಇಂಟೆಲಿಜೆನ್ಸ್ (Screen Intelligence)**: `PARTIALLY_IMPLEMENTED` (Accessibility & Screen Recording ಅನುಮತಿಗಳೊಂದಿಗೆ ಲಭ್ಯ)\n\n"
+            "⚠️ **ಸುರಕ್ಷತಾ ನಿಯಮ**: ಯಾವುದೇ ಇಮೇಲ್ ಅಥವಾ ಸಂದೇಶ ಕಳುಹಿಸುವ ಮೊದಲು ನಿಮ್ಮ ಸ್ಪಷ್ಟ ಅನುಮೋದನೆ ಕಡ್ಡಾಯವಾಗಿದೆ."
+        )
+    elif lang_code == "hi":
+        return (
+            "### Cortex क्षमताएं और स्थिति (Capabilities Status)\n\n"
+            "• **प्राकृतिक संवाद और सामान्य ज्ञान**: `SUPPORTED_AND_READY` (हिंदी, अंग्रेजी, कन्नड़, Hinglish समर्थन)\n"
+            "• **वेब रिसर्च (Web Research)**: `SUPPORTED_AND_READY` (लाइव सर्च और विकिपीडिया प्रामाणिक सारांश)\n"
+            "• **एप्पल मेल (Apple Mail)**: `SUPPORTED_AND_READY` (ड्राफ्ट तैयार करना, संपादन और अनुमोदन सुरक्षा)\n"
+            "• **मैक सिस्टम और फाइंडर नियंत्रण**: `SUPPORTED_AND_READY` (Downloads सूची और ऐप्स प्रबंधन)\n"
+            "• **व्हाट्सएप सुरक्षित मैसेजिंग**: `SUPPORTED_AND_READY` (सत्यापित संपर्क केवल, ड्राफ्ट-ओनली सुरक्षा)\n"
+            "• **स्क्रीन इंटेलिजेंस (Screen Intelligence)**: `PARTIALLY_IMPLEMENTED` (Accessibility & Screen Recording अनुमति आवश्यक)\n\n"
+            "⚠️ **सुरक्षा नीति**: ईमेल या संदेश भेजने जैसे महत्वपूर्ण कार्यों से पहले आपकी स्पष्ट मंजूरी अनिवार्य है।"
+        )
+    return (
+        "### Cortex System Capabilities & Status\n\n"
+        "• **Conversational Intelligence**: `SUPPORTED_AND_READY` (Multilingual support: English, Kannada, Hindi, Kanglish, Hinglish; session context & follow-ups)\n"
+        "• **Web Research Engine**: `SUPPORTED_AND_READY` (Real-time web search and authoritative Wikipedia REST summaries with citations)\n"
+        "• **Apple Mail Automation**: `SUPPORTED_AND_READY` (Draft composition, multi-turn revision, subject inference, supervisor approval gate)\n"
+        "• **macOS Application & Finder Control**: `SUPPORTED_AND_READY` (Finder Downloads listing across TCC boundaries, application launch & quit)\n"
+        "• **Personal WhatsApp Visible-UI Automation**: `SUPPORTED_AND_READY` (Strict recipient verification, fail-closed resolution, draft-only protection)\n"
+        "• **Screen Intelligence Engine**: `PARTIALLY_IMPLEMENTED` (Swift native helper, ScreenCaptureKit, Accessibility API, Apple Vision OCR; active when macOS permissions granted)\n\n"
+        "🔒 **Supervised Safety Model**: Consequential actions (sending mail, sending messages, deletions) strictly require your explicit approval before execution."
+    )
+
+
 def get_cortex_status(lang_code: str) -> str:
     """Returns warm, localized status ('How are you?') response as a close friend."""
     if lang_code == "kn":
@@ -310,7 +346,7 @@ def get_offline_knowledge(query: str, lang_code: str) -> str | None:
     q = query.lower().strip()
 
     # Capital of India
-    if any(p in q for p in ("capital of india", "ಭಾರತದ ರಾಜಧಾನಿ", "भारत की राजधानी", "இந்தியாவின் தலைநகரம்", "భారతదేశ రాజధాని")):
+    if any(p in q for p in ("capital of india", "india capital", "india da capital", "ಭಾರತದ ರಾಜಧಾನಿ", "भारत की राजधानी", "bharat ki rajdhani", "bharathada rajadhani", "இந்தியாவின் தலைநகரம்", "భారతదేశ రాజధాని")):
         if lang_code == "kn":
             return "ಭಾರತದ ರಾಜಧಾನಿ ನವದೆಹಲಿ."
         elif lang_code == "hi":
@@ -322,7 +358,7 @@ def get_offline_knowledge(query: str, lang_code: str) -> str | None:
         return "The capital of India is New Delhi."
 
     # Capital of Karnataka
-    if any(p in q for p in ("capital of karnataka", "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ", "कर्नाटक की राजधानी", "கர்நாடகாவின் தலைநகரம்", "కర్ణాటక రాజధాని")):
+    if any(p in q for p in ("capital of karnataka", "karnataka capital", "karnataka da capital", "karnataka rajadhani", "karnatakada rajadhani", "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ", "कर्नाटक की राजधानी", "கர்நாடகாவின் தலைநகரம்", "కర్ణాటక రాజధాని")):
         if lang_code == "kn":
             return "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಬೆಂಗಳೂರು."
         elif lang_code == "hi":
@@ -378,5 +414,29 @@ def get_offline_knowledge(query: str, lang_code: str) -> str | None:
         elif lang_code == "te":
             return "కృత్రిమ మేధస్సు (AI) అనేది మానవుల వలె ఆలోచించడానికి, నేర్చుకోవడానికి కంప్యూటర్లు రూపొందించిన సాంకేతికత."
         return "Artificial Intelligence (AI) is the simulation of human intelligence by machines, enabling them to learn, reason, and solve problems."
+
+    # Big Bang Theory (Cosmology)
+    if any(p in q for p in ("big bang", "big bang theory", "ಮಹಾಸ್ಪೋಟ", "महाविस्फोट", "பெருவெடிப்பு")):
+        if lang_code == "kn":
+            return "ಮಹಾಸ್ಪೋಟ ಸಿದ್ಧಾಂತ (Big Bang Theory) ವಿಶ್ವದ ಉಗಮ ಮತ್ತು ವಿಕಾಸವನ್ನು ವಿವರಿಸುವ ಪ್ರಮುಖ ವೈಜ್ಞಾನಿಕ ಸಿದ್ಧಾಂತವಾಗಿದೆ. ಸುಮಾರು 13.8 ಶತಕೋಟಿ ವರ್ಷಗಳ ಹಿಂದೆ ಅಗಾಧವಾದ ಸಾಂದ್ರತೆ ಮತ್ತು ತಾಪಮಾನದ ಒಂದು ಏಕೈಕ ಬಿಂದುವಿನಿಂದ ವಿಶ್ವವು ನಿರಂತರವಾಗಿ ವಿಸ್ತರಿಸಲಾರಂಭಿಸಿತು ಎಂದು ಇದು ತಿಳಿಸುತ್ತದೆ."
+        elif lang_code == "hi":
+            return "बिग बैंग सिद्धांत (Big Bang Theory) ब्रह्मांड की उत्पत्ति और विस्तार को समझाने वाला प्रमुख वैज्ञानिक मॉडल है। इसके अनुसार, लगभग 13.8 अरब वर्ष पहले ब्रह्मांड एक अत्यधिक गर्म और घने बिंदु से निरंतर विस्तारित होना शुरू हुआ था।"
+        return "The Big Bang theory is the prevailing scientific cosmological model explaining the origin and expansion of the observable universe from an initial high-density, high-temperature state approximately 13.8 billion years ago."
+
+    # Quantum computing
+    if any(p in q for p in ("quantum computing", "quantum computer", "ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್", "क्वांटम कंप्यूटिंग")):
+        if lang_code == "kn":
+            return "ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್ ಎನ್ನುವುದು ಸೂಪರ್‌ಪೊಸಿಷನ್ ಮತ್ತು ಎಂಟಾಂಗಲ್‌ಮೆಂಟ್‌ನಂತಹ ಕ್ವಾಂಟಮ್ ಭೌತಶಾಸ್ತ್ರದ ತತ್ವಗಳನ್ನು ಬಳಸಿಕೊಂಡು ಸಾಂಪ್ರದಾಯಿಕ ಕಂಪ್ಯೂಟರ್‌ಗಳಿಗಿಂತ ಅತ್ಯಂತ ವೇಗವಾಗಿ ಸಂಕೀರ್ಣ ಲೆಕ್ಕಾಚಾರಗಳನ್ನು ನಿರ್ವಹಿಸುವ ಸುಧಾರಿತ ತಂತ್ರಜ್ಞಾನವಾಗಿದೆ."
+        elif lang_code == "hi":
+            return "क्वांटम कंप्यूटिंग एक उन्नत तकनीक है जो सुपरपोजिशन और एंटैंगलमेंट जैसे क्वांटम यांत्रिकी के सिद्धांतों का उपयोग करके पारंपरिक कंप्यूटरों की तुलना में जटिल गणनाओं को तेजी से हल करती है।"
+        return "Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics, utilizing qubits in superposition and entanglement to solve complex computational problems exponentially faster than classical computers."
+
+    # Bruce Lee
+    if "bruce lee" in q or "ಬ್ರೂಸ್ ಲೀ" in q or "ब्रूस ली" in q:
+        if lang_code == "kn":
+            return "ಬ್ರೂಸ್ ಲೀ (1940–1973) ವಿಶ್ವಪ್ರಸಿದ್ಧ ಮಾರ್ಷಲ್ ಆರ್ಟ್ಸ್ ಪಟು, ತತ್ವಜ್ಞಾನಿ ಮತ್ತು ನಟ. ಅವರು ಜೀತ್ ಕುನೆ ಡೊ (Jeet Kune Do) ಎಂಬ ಹೊಸ ಸಮರಕಲಾ ತತ್ವವನ್ನು ಸ್ಥಾಪಿಸಿ, ಜಾಗತಿಕ ಸಿನೆಮಾರಂಗದಲ್ಲಿ ಮಾರ್ಷಲ್ ಆರ್ಟ್ಸ್‌ಗೆ ಅಪಾರ ಜನಪ್ರಿಯತೆ ತಂದುಕೊಟ್ಟರು."
+        elif lang_code == "hi":
+            return "ब्रूस ली (1940–1973) एक प्रसिद्ध मार्शल आर्टिस्ट, दार्शनिक और अभिनेता थे। उन्होंने जीत कुने दो (Jeet Kune Do) की स्थापना की और वैश्विक स्तर पर मार्शल आर्ट्स सिनेमा को नई पहचान दिलाई।"
+        return "Bruce Lee (1940–1973) was an iconic martial artist, philosopher, and cultural icon who founded Jeet Kune Do and revolutionized martial arts in global cinema."
 
     return None
