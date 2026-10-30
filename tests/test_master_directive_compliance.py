@@ -16,6 +16,7 @@ from backend.persistence import EncryptedMemoryStore
 from backend.agent import CortexOrchestrator, EmailDraft
 from backend.integrations.email.gmail_provider import GmailProvider
 from backend.api.server import app
+from backend.core.auth import get_or_create_session_secret
 from fastapi.testclient import TestClient
 
 
@@ -202,7 +203,8 @@ class TestServerEndpoints(unittest.TestCase):
     """Verifies FastAPI endpoints for task draft editing, accounts, and auth."""
 
     def setUp(self):
-        self.client = TestClient(app)
+        self.auth_token = get_or_create_session_secret()
+        self.client = TestClient(app, headers={"X-Cortex-Session": self.auth_token})
 
     def test_get_email_accounts_endpoint(self):
         res = self.client.get("/email/accounts")

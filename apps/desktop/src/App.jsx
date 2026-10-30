@@ -12,7 +12,8 @@ import "./styles.css";
 
 const API = "http://127.0.0.1:8765";
 
-// ─── IPC bridge (works in Electron; safely no-op in browser) ──────────────────
+// ─── IPC bridge (works in Electron via secure preload; safely no-op in browser) ──
+const cortexBridge = typeof window !== "undefined" && window.cortexAPI ? window.cortexAPI : null;
 const ipc = typeof window !== "undefined" && window.require ? window.require("electron").ipcRenderer : null;
 
 // ─── Language metadata ────────────────────────────────────────────────────────
@@ -231,11 +232,358 @@ function ResponseCard({ task, message }) {
     );
   }
 
+  // WhatsApp Card (Draft, Pending Approval, or Sent)
+  if (
+    (cmd === "send_whatsapp" || cmd === "draft_whatsapp" || cmd === "send_message") &&
+    (task.params?.channel === "whatsapp" || task.params?.phone || (task.intent && task.intent.toLowerCase().includes("whatsapp")))
+  ) {
+    const p = task.params || {};
+    const recipientDisplay = p.contact_name
+      ? `${p.contact_name}${p.phone ? ` (${p.phone})` : " [Phone not visible in UI]"}`
+      : (p.recipient ? `${p.recipient}${p.phone ? ` (${p.phone})` : " [Phone not visible in UI]"}` : p.phone || "Recipient");
+    const bodyContent = p.formatted_body || p.body;
+    const isCompleted = task.status === "completed";
+    const isWaiting = task.status === "waiting_approval" || task.status === "awaiting_approval";
+    const isDraftOnly = Boolean(p.draft_only);
+
+    return (
+      <div className="result-card whatsapp-card" style={{ borderColor: isCompleted ? "var(--good)" : "var(--brand-accent)" }}>
+        <div className="result-card-header">
+          <div className="result-card-icon whatsapp-icon" style={{ background: "rgba(37, 211, 102, 0.15)", color: "#25D366" }}>
+            <Radio size={15} />
+          </div>
+          <span style={{ fontWeight: 600 }}>WhatsApp {isCompleted ? "Message Sent" : isDraftOnly ? "Draft Prepared" : isWaiting ? "Review & Approve" : "Message"}</span>
+          <LanguageBadge lang={lang} />
+          {isCompleted && (
+            <span className="task-status-badge badge-completed" style={{ marginLeft: "auto", fontSize: "11px", color: "var(--good)" }}>
+              ✓ Sent
+            </span>
+          )}
+          {!isCompleted && isDraftOnly && (
+            <span className="task-status-badge badge-draft-only" style={{ marginLeft: "auto", fontSize: "11px", color: "#3B82F6", background: "rgba(59, 130, 246, 0.15)", padding: "2px 8px", borderRadius: "4px" }}>
+              Draft only — not sent
+            </span>
+          )}
+          {!isCompleted && !isDraftOnly && isWaiting && (
+            <span className="task-status-badge badge-awaiting" style={{ marginLeft: "auto", fontSize: "11px", color: "var(--warn)" }}>
+              Awaiting Approval
+            </span>
+          )}
+        </div>
+        <div className="draft-fields">
+          <div className="draft-field">
+            <span className="draft-label">To</span>
+            <span className="draft-value">
+              {recipientDisplay}
+              {p.contact_source === "whatsapp_desktop_ui" && p.contact_verified ? (
+                <span className="contact-verified-badge" style={{ marginLeft: "8px", fontSize: "10.5px", color: "var(--good)", background: "rgba(34, 197, 94, 0.12)", padding: "2px 6px", borderRadius: "4px" }}>
+                  ✓ Visible WhatsApp Identity (Live UI)
+                </span>
+              ) : p.contact_verified ? (
+                <span className="contact-verified-badge" style={{ marginLeft: "8px", fontSize: "10.5px", color: "var(--good)", background: "rgba(34, 197, 94, 0.12)", padding: "2px 6px", borderRadius: "4px" }}>
+                  ✓ Verified Contact ({p.contact_source || "saved contacts"})
+                </span>
+              ) : (
+                <span className="contact-unverified-badge" style={{ marginLeft: "8px", fontSize: "10.5px", color: "var(--warn)", background: "rgba(245, 158, 11, 0.12)", padding: "2px 6px", borderRadius: "4px" }}>
+                  ⚠ Unverified Identity (Confirmation required)
+                </span>
+              )}
+            </span>
+          </div>
+          {bodyContent && (
+            <div className="draft-field">
+              <span className="draft-label">Message</span>
+              <span className="draft-value" style={{ whiteSpace: "pre-wrap" }}>{bodyContent}</span>
+            </div>
+          )}
+          {p.approval_hash && (
+            <div className="draft-field">
+              <span className="draft-label">Security Hash</span>
+              <span className="draft-value" style={{ fontFamily: "monospace", fontSize: "11px", opacity: 0.8 }}>
+                {p.approval_hash.slice(0, 16)}...
+              </span>
+            </div>
+          )}
+        </div>
+        {isDraftOnly && (
+          <div style={{ marginTop: "10px", fontSize: "11.5px", color: "#3B82F6" }}>
+            ℹ Draft only — not sent. Ready in WhatsApp composer for review. Direct send disabled.
+          </div>
+        )}
+        {isCompleted && (
+          <div style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--good)" }}>
+            ✓ WhatsApp message dispatched and verified.
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Generic card with markdown
   return (
     <div className="ai-response-card">
       {lang && lang !== "en" && <LanguageBadge lang={lang} />}
       <FormattedMessage content={message} />
+    </div>
+  );
+}
+
+// ─── Audit History — Event Metadata ──────────────────────────────────────────
+
+/** Keys whose values must never be displayed in the audit history UI. */
+const REDACTED_KEYS = new Set([
+  "body", "formatted_body", "raw_body", "password", "token", "secret",
+  "api_key", "approval_hash", "hash", "encryption_key", "private_key",
+  "credentials", "auth_token", "access_token", "refresh_token",
+]);
+
+/** Maps event type → { icon, title, statusLabel, statusClass, category } */
+const EVENT_META = {
+  // Email events
+  draft_prepared:         { icon: "✉️",  title: "Email Draft Prepared",              statusLabel: "Awaiting Approval", statusClass: "status-waiting",   category: "email" },
+  draft_ready:            { icon: "✉️",  title: "Email Draft Ready",                 statusLabel: "Awaiting Approval", statusClass: "status-waiting",   category: "email" },
+  draft_edited:           { icon: "✏️", title: "Email Draft Updated",               statusLabel: "Updated",           statusClass: "status-info",      category: "email" },
+  draft_deleted:          { icon: "🗑️", title: "Draft Removed",                     statusLabel: "Removed",           statusClass: "status-cancelled", category: "email" },
+  approval_granted:       { icon: "✅",  title: "Email Approved for Sending",        statusLabel: "Approved",          statusClass: "status-good",      category: "email" },
+  approval_rejected:      { icon: "❌",  title: "Email Approval Rejected",           statusLabel: "Rejected",          statusClass: "status-bad",       category: "email" },
+  approval_required:      { icon: "🔐",  title: "Approval Required",                 statusLabel: "Blocked",           statusClass: "status-waiting",   category: "email" },
+  approval_replay_rejected:{ icon:"⚠️", title: "Duplicate Approval Ignored",        statusLabel: "Skipped",           statusClass: "status-warn",      category: "email" },
+  approval_invalidated:   { icon: "⚠️", title: "Approval Invalidated",              statusLabel: "Invalidated",       statusClass: "status-warn",      category: "email" },
+  approval_expired:       { icon: "⏰",  title: "Approval Request Expired",          statusLabel: "Expired",           statusClass: "status-warn",      category: "email" },
+  mail_fetch_started:     { icon: "📥",  title: "Fetching Email Inbox",              statusLabel: "Running",           statusClass: "status-running",   category: "email" },
+  mail_fetch_completed:   { icon: "📬",  title: "Email Inbox Fetched",               statusLabel: "Completed",         statusClass: "status-good",      category: "email" },
+  // Task lifecycle
+  received:               { icon: "📨",  title: "Request Received",                  statusLabel: "Received",          statusClass: "status-info",      category: "system" },
+  running:                { icon: "⚡",  title: "Task Running",                      statusLabel: "Running",           statusClass: "status-running",   category: "system" },
+  executing:              { icon: "⚙️", title: "Executing Plan",                    statusLabel: "Running",           statusClass: "status-running",   category: "system" },
+  completed:              { icon: "✅",  title: "Task Completed",                    statusLabel: "Completed",         statusClass: "status-good",      category: "system" },
+  step_completed:         { icon: "✔️", title: "Step Completed",                   statusLabel: "Completed",         statusClass: "status-good",      category: "system" },
+  failed:                 { icon: "⛔",  title: "Task Failed",                       statusLabel: "Failed",            statusClass: "status-bad",       category: "system" },
+  cancelled:              { icon: "🚫",  title: "Task Cancelled",                    statusLabel: "Cancelled",         statusClass: "status-cancelled", category: "system" },
+  canceled:               { icon: "🚫",  title: "Task Cancelled",                    statusLabel: "Cancelled",         statusClass: "status-cancelled", category: "system" },
+  execution_blocked:      { icon: "🔒",  title: "Execution Blocked — Approval Required", statusLabel: "Blocked",      statusClass: "status-warn",      category: "system" },
+  need_info:              { icon: "❓",  title: "Clarification Requested",           statusLabel: "Needs Info",        statusClass: "status-waiting",   category: "system" },
+  paused_model_unavailable:{ icon:"⏸️", title: "Task Paused — AI Model Unavailable",statusLabel: "Paused",           statusClass: "status-warn",      category: "system" },
+  blocked:                { icon: "🔒",  title: "Task Blocked",                      statusLabel: "Blocked",           statusClass: "status-warn",      category: "system" },
+  sequence_paused:        { icon: "⏸️", title: "Sequence Paused",                   statusLabel: "Paused",            statusClass: "status-warn",      category: "system" },
+  capability_selected:    { icon: "🎯",  title: "Action Selected",                   statusLabel: "Running",           statusClass: "status-running",   category: "system" },
+  recovery_failed:        { icon: "⛔",  title: "Recovery Failed",                   statusLabel: "Failed",            statusClass: "status-bad",       category: "system" },
+  retrying:               { icon: "🔄",  title: "Retrying",                          statusLabel: "Running",           statusClass: "status-running",   category: "system" },
+  observed:               { icon: "👁️", title: "State Observed",                   statusLabel: "Running",           statusClass: "status-running",   category: "system" },
+  step_verified:          { icon: "🔍",  title: "Step Verified",                     statusLabel: "Verified",          statusClass: "status-good",      category: "system" },
+  verification_failed:    { icon: "⚠️", title: "Verification Failed",               statusLabel: "Unverified",        statusClass: "status-warn",      category: "system" },
+  duplicate_prevented:    { icon: "🛡️", title: "Duplicate Execution Prevented",    statusLabel: "Skipped",           statusClass: "status-info",      category: "system" },
+  cancel_ignored:         { icon: "ℹ️", title: "Cancel Ignored — Already Terminal", statusLabel: "Ignored",          statusClass: "status-info",      category: "system" },
+  language_detected:      { icon: "🌐",  title: "Language Detected",                 statusLabel: "Info",              statusClass: "status-info",      category: "system" },
+  // Search
+  web_search_started:     { icon: "🔍",  title: "Web Search Started",                statusLabel: "Running",           statusClass: "status-running",   category: "search" },
+  web_search_completed:   { icon: "🌐",  title: "Web Search Completed",              statusLabel: "Completed",         statusClass: "status-good",      category: "search" },
+};
+
+function getEventMeta(eventType) {
+  return EVENT_META[eventType] || {
+    icon: "📋", title: eventType.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
+    statusLabel: "Event", statusClass: "status-info", category: "other"
+  };
+}
+
+function formatAuditTimestamp(isoStr) {
+  if (!isoStr) return "Timestamp unavailable";
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return "Invalid timestamp";
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium", timeStyle: "short",
+    }).format(d);
+  } catch {
+    return "Timestamp unavailable";
+  }
+}
+
+function redactData(data) {
+  if (!data || typeof data !== "object") return {};
+  const out = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (REDACTED_KEYS.has(k.toLowerCase())) {
+      out[k] = "••••••";
+    } else if (typeof v === "object" && v !== null) {
+      out[k] = redactData(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/** Render a memory payload dict as human-readable key-value pairs. */
+function MemoryPayloadDisplay({ payload }) {
+  if (!payload || typeof payload !== "object") {
+    const text = String(payload ?? "—");
+    return <span className="memory-item-text">{text}</span>;
+  }
+  const entries = Object.entries(payload).filter(([k]) => !REDACTED_KEYS.has(k.toLowerCase()));
+  if (entries.length === 0) return <span className="memory-item-text" style={{ fontStyle: "italic", color: "var(--text-muted)" }}>No displayable fields</span>;
+  if (entries.length === 1) {
+    const [, v] = entries[0];
+    const display = typeof v === "string" ? v : JSON.stringify(v);
+    return <span className="memory-item-text">{display}</span>;
+  }
+  return (
+    <span className="memory-item-text">
+      {entries.map(([k, v], i) => (
+        <span key={k}>
+          <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>{k}:</span>{" "}
+          <span>{typeof v === "string" ? v : JSON.stringify(v)}</span>
+          {i < entries.length - 1 ? <span style={{ color: "var(--border-2)", margin: "0 4px" }}>·</span> : null}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Single audit event card — collapsible details section. */
+function AuditEventCard({ event }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = getEventMeta(event.type);
+  const hasData = event.data && Object.keys(event.data).length > 0;
+  const redacted = hasData ? redactData(event.data) : {};
+  const hasRedactedData = Object.keys(redacted).length > 0;
+
+  return (
+    <div className="audit-event-card">
+      <div className="audit-event-header">
+        <span className="audit-event-icon" aria-hidden="true">{meta.icon}</span>
+        <div className="audit-event-main">
+          <span className="audit-event-title">{meta.title}</span>
+          {event.message && event.message !== meta.title && (
+            <span className="audit-event-msg">{event.message}</span>
+          )}
+        </div>
+        <div className="audit-event-right">
+          <span className={`audit-status-badge ${meta.statusClass}`}>{meta.statusLabel}</span>
+          <span className="audit-event-time">{formatAuditTimestamp(event.createdAt)}</span>
+          {hasRedactedData && (
+            <button
+              className="audit-expand-btn"
+              onClick={() => setExpanded(e => !e)}
+              aria-label={expanded ? "Collapse details" : "Expand details"}
+              title={expanded ? "Collapse details" : "Show technical details"}
+            >
+              {expanded ? "▲" : "▼"}
+            </button>
+          )}
+        </div>
+      </div>
+      {expanded && hasRedactedData && (
+        <div className="audit-event-details">
+          <div className="audit-details-label">Technical Details</div>
+          <pre className="audit-details-pre">{JSON.stringify(redacted, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Flattens all audit events from a list of tasks into a single sorted list. */
+function flattenAuditEvents(tasks) {
+  const events = [];
+  for (const t of tasks) {
+    if (!t.auditTrail?.length) continue;
+    for (const ev of t.auditTrail) {
+      events.push({ ...ev, _taskIntent: t.intent, _taskId: t.id });
+    }
+  }
+  // Newest first
+  events.sort((a, b) => {
+    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return tb - ta;
+  });
+  return events;
+}
+
+const AUDIT_CATEGORY_LABELS = { email: "Email", system: "System", search: "Search", other: "Other" };
+
+/** Full audit history panel used inside the Memory & Trust tab. */
+function AuditHistoryPanel() {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const fetchHistory = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/tasks?limit=100`);
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+      setEvents(flattenAuditEvents(data.tasks || []));
+    } catch (err) {
+      setError("Could not load activity history.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
+
+  const categories = ["all", "email", "system", "search"];
+  const filtered = filter === "all" ? events : events.filter(ev => {
+    const meta = getEventMeta(ev.type);
+    return meta.category === filter;
+  });
+
+  return (
+    <div className="audit-history-panel">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
+        <div className="setting-info">
+          <span className="setting-title">Activity Log</span>
+          <span className="setting-desc">All system events, email actions, and task history</span>
+        </div>
+        <button className="audit-refresh-btn" onClick={fetchHistory} title="Refresh" aria-label="Refresh activity log">
+          <RefreshCw size={13} />
+        </button>
+      </div>
+
+      {/* Category filter pills */}
+      <div className="audit-filter-row">
+        {categories.map(cat => (
+          <button
+            key={cat}
+            className={`audit-filter-pill ${filter === cat ? "active" : ""}`}
+            onClick={() => setFilter(cat)}
+          >
+            {cat === "all" ? "All" : AUDIT_CATEGORY_LABELS[cat]}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="audit-state-msg">
+          <RefreshCw size={16} style={{ animation: "spin 1s linear infinite" }} />
+          <span>Loading history…</span>
+        </div>
+      ) : error ? (
+        <div className="audit-state-msg audit-error">
+          <AlertTriangle size={15} />
+          <span>{error}</span>
+          <button className="audit-refresh-btn" onClick={fetchHistory}>Retry</button>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="audit-state-msg">
+          <History size={16} style={{ opacity: 0.5 }} />
+          <span style={{ fontStyle: "italic" }}>
+            {filter === "all" ? "No activity yet. Your history will appear here." : `No ${AUDIT_CATEGORY_LABELS[filter] ?? filter} events found.`}
+          </span>
+        </div>
+      ) : (
+        <div className="audit-event-list">
+          {filtered.map((ev, i) => (
+            <AuditEventCard key={`${ev._taskId}-${ev.type}-${ev.createdAt ?? i}`} event={ev} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -468,7 +816,7 @@ function SettingsModal({
                   {memories.map(mem => (
                     <div key={mem.id} className="memory-item">
                       <span className="memory-item-kind">{mem.kind}</span>
-                      <span className="memory-item-text">{JSON.stringify(mem.payload)}</span>
+                      <MemoryPayloadDisplay payload={mem.payload} />
                       <button
                         className="memory-del-btn"
                         onClick={() => handleDeleteMemory(mem.id)}
@@ -485,6 +833,11 @@ function SettingsModal({
               <div style={{ marginTop: "14px", padding: "12px", borderRadius: "var(--radius-sm)", background: "rgba(91, 158, 246, 0.08)", border: "1px solid rgba(91, 158, 246, 0.2)", fontSize: "12px", lineHeight: "1.5", color: "var(--text-muted)" }}>
                 <Shield size={14} style={{ verticalAlign: "middle", marginRight: "6px", color: "var(--accent)" }} />
                 <strong>Security Guarantee:</strong> Consequential actions (such as sending emails or deleting data) always require your deliberate cryptographic authorization. No silent background execution.
+              </div>
+
+              {/* ── Activity Log ── */}
+              <div style={{ marginTop: "8px", borderTop: "1px solid var(--border)", paddingTop: "16px" }}>
+                <AuditHistoryPanel />
               </div>
             </>
           )}
@@ -508,10 +861,13 @@ function SettingsModal({
 // ─── Edit Draft Modal (Server-Verified SHA-256) ───────────────────────────────
 function EditDraftModal({ task, onClose, onSave, onSaveAndApprove }) {
   const p = task?.params || {};
-  const [recipient, setRecipient]   = useState(p.recipient_email || p.recipient || "");
-  const [subject, setSubject]       = useState(p.subject || "");
-  const [body, setBody]             = useState(p.formatted_body || p.body || "");
-  const [attachments, setAttachments] = useState(
+  const [recipient, setRecipient]       = useState(p.recipient_email || p.recipient || "");
+  const [senderAccount, setSenderAccount] = useState(p.sender_account || p.account || "");
+  const [subject, setSubject]           = useState(p.subject || "");
+  const [cc, setCc]                     = useState(Array.isArray(p.cc) ? p.cc.join(", ") : (p.cc || ""));
+  const [bcc, setBcc]                   = useState(Array.isArray(p.bcc) ? p.bcc.join(", ") : (p.bcc || ""));
+  const [body, setBody]                 = useState(p.formatted_body || p.body || "");
+  const [attachments, setAttachments]   = useState(
     Array.isArray(p.attachments) ? p.attachments.join(", ") : (p.attachments || "")
   );
   const [isSaving, setIsSaving] = useState(false);
@@ -519,7 +875,7 @@ function EditDraftModal({ task, onClose, onSave, onSaveAndApprove }) {
   async function handleSave() {
     setIsSaving(true);
     try {
-      await onSave({ recipient, subject, body, attachments });
+      await onSave({ recipient, subject, body, attachments, sender_account: senderAccount, cc, bcc });
     } finally {
       setIsSaving(false);
     }
@@ -528,7 +884,7 @@ function EditDraftModal({ task, onClose, onSave, onSaveAndApprove }) {
   async function handleApprove() {
     setIsSaving(true);
     try {
-      await onSaveAndApprove({ recipient, subject, body, attachments });
+      await onSaveAndApprove({ recipient, subject, body, attachments, sender_account: senderAccount, cc, bcc });
     } finally {
       setIsSaving(false);
     }
@@ -551,6 +907,18 @@ function EditDraftModal({ task, onClose, onSave, onSaveAndApprove }) {
           <div className="draft-modal-row">
             <label>Recipient (To)</label>
             <input value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="recipient@example.com" />
+          </div>
+          <div className="draft-modal-row">
+            <label>From (Sender Account)</label>
+            <input value={senderAccount} onChange={e => setSenderAccount(e.target.value)} placeholder="Primary Account" />
+          </div>
+          <div className="draft-modal-row">
+            <label>CC (comma-separated)</label>
+            <input value={cc} onChange={e => setCc(e.target.value)} placeholder="colleague@example.com" />
+          </div>
+          <div className="draft-modal-row">
+            <label>BCC (comma-separated)</label>
+            <input value={bcc} onChange={e => setBcc(e.target.value)} placeholder="audit@example.com" />
           </div>
           <div className="draft-modal-row">
             <label>Subject</label>
@@ -720,16 +1088,25 @@ function App() {
 
   // IPC: sync HUD window
   useEffect(() => {
-    if (!ipc || !task) return;
+    if (!task) return;
     if (["running", "executing"].includes(task.status)) {
-      ipc.send("hud-show", { intent: task.intent, steps: task.auditTrail });
+      if (cortexBridge) cortexBridge.showHud({ intent: task.intent, steps: task.auditTrail });
+      else if (ipc) ipc.send("hud-show", { intent: task.intent, steps: task.auditTrail });
     } else {
-      ipc.send("hud-hide");
+      if (cortexBridge) cortexBridge.hideHud();
+      else if (ipc) ipc.send("hud-hide");
     }
   }, [task]);
 
   // IPC: sync window mode (floating assistant vs full workspace)
   useEffect(() => {
+    if (cortexBridge) {
+      const unsub = cortexBridge.onWindowModeChanged((mode) => setIsFloating(mode === "floating"));
+      cortexBridge.getWindowMode().then(mode => {
+        if (mode === "floating") setIsFloating(true);
+      }).catch(() => {});
+      return () => { if (unsub) unsub(); };
+    }
     if (!ipc) return;
     const onModeChanged = (_, mode) => setIsFloating(mode === "floating");
     ipc.on("window-mode-changed", onModeChanged);
@@ -744,7 +1121,9 @@ function App() {
   function toggleFloatingMode() {
     const next = !isFloating;
     setIsFloating(next);
-    if (ipc) {
+    if (cortexBridge) {
+      cortexBridge.setWindowMode(next ? "floating" : "standard");
+    } else if (ipc) {
       ipc.send("set-window-mode", next ? "floating" : "standard");
     }
   }
@@ -1157,7 +1536,7 @@ function App() {
       const res = await fetch(`${API}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, source }),
+        body: JSON.stringify({ message: text, source, preferred_language: preferredLang }),
       });
       const data = await res.json();
       const lang = data.task?.language || "en";
@@ -1396,30 +1775,51 @@ function App() {
   }
 
   // ─── Cryptographic Action Approval / Rejection ──────────────────────────────
-  async function decide(approved) {
+  async function decide(approved, explicitHash = null) {
     if (!task) return;
     approved ? playChime("success") : playChime("deactivate");
-    const res = await fetch(`${API}/tasks/${task.id}/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approved }),
-    });
-    const data = await res.json();
-    setTask(data);
-    const lang = data.language || detectedLang || "en";
-    const msg = approved ? "Approved. Executing action now." : "Action rejected.";
-    setAssistant(msg);
-    speakText(msg, lang, () => {
-      setAssistant("Listening — speak anytime…");
-    });
+    try {
+      const hashToSend = explicitHash || task.params?.approval_hash || null;
+      const res = await fetch(`${API}/tasks/${task.id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          approved,
+          approval_hash: hashToSend,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAssistant(`Approval error: ${data.detail || "Action rejected by security policy."}`);
+        playChime("alert");
+        return;
+      }
+      setTask(data);
+      const lang = data.language || detectedLang || "en";
+      const msg = approved ? "Approved. Executing action now." : "Action rejected.";
+      setAssistant(msg);
+      speakText(msg, lang, () => {
+        setAssistant("Listening — speak anytime…");
+      });
+    } catch (err) {
+      console.error("Approval request failed:", err);
+      setAssistant("Error connecting to server for approval.");
+      playChime("alert");
+    }
   }
 
   // ─── Server-Verified Draft Editing ──────────────────────────────────────────
-  async function handleSaveEdit({ recipient, subject, body, attachments }) {
+  async function handleSaveEdit({ recipient, subject, body, attachments, sender_account, cc, bcc }) {
     if (!task) return;
     const attList = typeof attachments === "string"
       ? attachments.split(",").map(s => s.trim()).filter(Boolean)
       : (attachments || []);
+    const ccList = typeof cc === "string"
+      ? cc.split(",").map(s => s.trim()).filter(Boolean)
+      : (cc || []);
+    const bccList = typeof bcc === "string"
+      ? bcc.split(",").map(s => s.trim()).filter(Boolean)
+      : (bcc || []);
     const res = await fetch(`${API}/tasks/${task.id}/edit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1428,7 +1828,9 @@ function App() {
         subject,
         body,
         attachments: attList,
-        sender_account: task.params?.sender_account
+        sender_account: sender_account || task.params?.sender_account,
+        cc: ccList,
+        bcc: bccList
       }),
     });
     if (res.ok) {
@@ -1447,8 +1849,9 @@ function App() {
   }
 
   async function handleSaveAndApprove(fields) {
-    await handleSaveEdit(fields);
-    await decide(true);
+    const updated = await handleSaveEdit(fields);
+    const newHash = updated?.task?.params?.approval_hash || updated?.params?.approval_hash;
+    await decide(true, newHash);
   }
 
   // ─── Clear Session ──────────────────────────────────────────────────────────
@@ -1478,12 +1881,31 @@ function App() {
         <div className="titlebar-brand">
           <div className="titlebar-logo-orb" />
           <span className="titlebar-label">Cortex</span>
-          {currentLang !== "en" && (
-            <div className="titlebar-badge" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-              <Languages size={11} />
-              <span>{LANG_META[currentLang]?.name || currentLang}</span>
-            </div>
-          )}
+          <div className="titlebar-badge" style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", background: "rgba(255,255,255,0.06)", borderRadius: "6px" }}>
+            <Languages size={12} />
+            <select
+              value={preferredLang}
+              onChange={e => setPreferredLang(e.target.value)}
+              className="lang-select-titlebar"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "inherit",
+                fontSize: "11px",
+                fontWeight: "500",
+                cursor: "pointer",
+                outline: "none",
+              }}
+              title="Select preferred response/draft language"
+            >
+              <option value="auto" style={{ background: "#1e1e24", color: "#fff" }}>🌐 Auto ({LANG_META[currentLang]?.name || "en"})</option>
+              <option value="en" style={{ background: "#1e1e24", color: "#fff" }}>English</option>
+              <option value="kn" style={{ background: "#1e1e24", color: "#fff" }}>ಕನ್ನಡ (Kannada)</option>
+              <option value="hi" style={{ background: "#1e1e24", color: "#fff" }}>हिन्दी (Hindi)</option>
+              <option value="ta" style={{ background: "#1e1e24", color: "#fff" }}>தமிழ் (Tamil)</option>
+              <option value="te" style={{ background: "#1e1e24", color: "#fff" }}>తెలుగు (Telugu)</option>
+            </select>
+          </div>
         </div>
 
         <div className="titlebar-actions">
@@ -1646,15 +2068,32 @@ function App() {
                 <div className="approval-desc">
                   Cortex proposes to execute: <strong>{task.command?.replace(/_/g, " ")}</strong>
                   {task.params?.recipient && <> → <em>{task.params.recipient}</em></>}
+                  {task.params?.sender_account && <><br /><small>From: {task.params.sender_account}</small></>}
+                  {task.params?.cc && (Array.isArray(task.params.cc) ? task.params.cc.length > 0 : Boolean(task.params.cc)) && (
+                    <><br /><small>CC: {Array.isArray(task.params.cc) ? task.params.cc.join(", ") : task.params.cc}</small></>
+                  )}
+                  {task.params?.bcc && (Array.isArray(task.params.bcc) ? task.params.bcc.length > 0 : Boolean(task.params.bcc)) && (
+                    <><br /><small>BCC: {Array.isArray(task.params.bcc) ? task.params.bcc.join(", ") : task.params.bcc}</small></>
+                  )}
+                  {task.params?.subject && <><br /><small>Subject: {task.params.subject}</small></>}
+                  {task.params?.attachments && (Array.isArray(task.params.attachments) ? task.params.attachments.length > 0 : Boolean(task.params.attachments)) && (
+                    <><br /><small>Attachments: {Array.isArray(task.params.attachments) ? task.params.attachments.join(", ") : task.params.attachments}</small></>
+                  )}
                   <br />
                   <span className="approval-hash-badge">
                     Approval SHA-256: {task.params?.approval_hash?.slice(0, 16)}…
                   </span>
                 </div>
                 <div className="approval-actions">
-                  <button className="btn-approve" onClick={() => decide(true)}>
-                    <Check size={14} /> Approve & Send
-                  </button>
+                  {task.params?.draft_only ? (
+                    <div style={{ padding: "6px 12px", background: "rgba(59, 130, 246, 0.12)", color: "var(--brand-accent)", borderRadius: "6px", fontSize: "12px", fontWeight: 500 }}>
+                      Draft only — not sent. Direct send disabled.
+                    </div>
+                  ) : (
+                    <button className="btn-approve" onClick={() => decide(true)}>
+                      <Check size={14} /> Approve & Send
+                    </button>
+                  )}
                   <button className="btn-edit" onClick={() => setEditModalOpen(true)}>
                     <FileEdit size={14} /> Edit Draft Details
                   </button>

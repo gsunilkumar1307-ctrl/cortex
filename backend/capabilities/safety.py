@@ -8,6 +8,7 @@ except ImportError:
 APPROVAL_REQUIRED = {
     TaskCommand.CLIPBOARD_WRITE,
     TaskCommand.SEND_MESSAGE,
+    TaskCommand.SEND_WHATSAPP,
     TaskCommand.SHUTDOWN,
     TaskCommand.RESTART,
     TaskCommand.BROWSER_CLICK,   # clicking on web pages can trigger purchases/forms
@@ -46,11 +47,20 @@ LOW_RISK_COMMANDS = {
     TaskCommand.PERSONAL_TASK_CREATE, # create personal task
     TaskCommand.PERSONAL_TASK_LIST,   # list personal tasks
     TaskCommand.DAILY_BRIEFING,       # daily overview
+    TaskCommand.OBSERVE_SCREEN,       # read-only multi-source desktop perception
+    TaskCommand.RESOLVE_UI_ELEMENT,   # read-only UI element localization
 }
 
 
 def classify_command(command: TaskCommand, intent: str) -> tuple[RiskLevel, bool, str | None]:
     text = intent.lower()
+
+    # Milestone 9 Security Hardening: Consequential UI element interactions require explicit approval
+    if command in (TaskCommand.CLICK_ELEMENT, TaskCommand.DESKTOP_WORKFLOW):
+        consequential_targets = ("delete", "remove", "send", "purchase", "buy", "pay", "format", "empty trash", "submit")
+        if any(word in text for word in consequential_targets):
+            return RiskLevel.HIGH, True, f"Clicking consequential UI element matching '{text}' requires explicit user approval."
+
     if command in {TaskCommand.WRITE_NOTE, TaskCommand.DRAFT_MAIL, TaskCommand.WRITE_FILE}:
         content_blocked = ("delete file", "delete folder")
         if any(term in text for term in content_blocked):
@@ -58,6 +68,7 @@ def classify_command(command: TaskCommand, intent: str) -> tuple[RiskLevel, bool
     else:
         if any(term in text for term in BLOCKED_TERMS):
             return RiskLevel.BLOCKED, False, "This action is outside the MVP safety boundary."
+
     if command == TaskCommand.UNKNOWN:
         return RiskLevel.LOW, False, None
     if command in LOW_RISK_COMMANDS:

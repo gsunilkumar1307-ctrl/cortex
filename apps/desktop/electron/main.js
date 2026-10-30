@@ -1,9 +1,32 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, session, systemPreferences, screen } from "electron";
+import { app, BrowserWindow, ipcMain, globalShortcut, session, systemPreferences, screen, shell } from "electron";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const preloadPath = path.join(__dirname, "preload.cjs");
 
 let mainWin = null;
 let hudWin = null;
 let isFloatingMode = false;
 let standardBounds = { width: 1120, height: 760, x: undefined, y: undefined };
+
+function getSessionSecret() {
+  if (process.env.CORTEX_SESSION_SECRET) {
+    return process.env.CORTEX_SESSION_SECRET.trim();
+  }
+  try {
+    const rootDir = path.resolve(__dirname, "../../..");
+    const secretFile = path.join(rootDir, ".session_secret");
+    if (fs.existsSync(secretFile)) {
+      return fs.readFileSync(secretFile, "utf-8").trim();
+    }
+  } catch (err) {
+    console.warn("[electron] Could not read .session_secret:", err);
+  }
+  return "";
+}
 
 function setupPermissions() {
   if (process.platform === "darwin") {
@@ -41,9 +64,19 @@ function createMainWindow() {
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: preloadPath,
     },
+  });
+
+  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://127.0.0.1:5173") || url.startsWith("http://localhost:5173")) {
+      return { action: "allow" };
+    }
+    shell.openExternal(url);
+    return { action: "deny" };
   });
 
   mainWin.loadURL(process.env.CORTEX_DESKTOP_URL || "http://127.0.0.1:5173");
@@ -67,8 +100,10 @@ function createHudWindow() {
     focusable: false,
     hasShadow: false,
     webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: preloadPath,
     },
   });
 
@@ -81,6 +116,37 @@ function createHudWindow() {
 
 app.whenReady().then(() => {
   setupPermissions();
+
+  // Attach session token automatically to backend requests without exposing it to the renderer
+  const sessionSecret = getSessionSecret();
+  if (sessionSecret && session.defaultSession) {
+    const authorizedOrigin = (process.env.CORTEX_API_ORIGIN || "http://127.0.0.1:8765").replace(/\/+$/, "");
+    const allowedFilter = [
+      `${authorizedOrigin}/*`,
+      "http://127.0.0.1:8765/*",
+      "http://localhost:8765/*",
+    ];
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+      { urls: allowedFilter },
+      (details, callback) => {
+        try {
+          const reqUrl = new URL(details.url);
+          // Strict origin validation: prevent leaking token across redirect or alternate port/host
+          if (
+            reqUrl.origin === authorizedOrigin ||
+            reqUrl.origin === "http://127.0.0.1:8765" ||
+            reqUrl.origin === "http://localhost:8765"
+          ) {
+            details.requestHeaders["X-Cortex-Session"] = sessionSecret;
+          }
+        } catch (err) {
+          console.warn("[electron] Invalid request URL in onBeforeSendHeaders:", err);
+        }
+        callback({ requestHeaders: details.requestHeaders });
+      }
+    );
+  }
+
   createMainWindow();
   createHudWindow();
 

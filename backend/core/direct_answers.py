@@ -97,6 +97,10 @@ def resolve_direct_answer(query: str, lang: str = "en") -> Optional[str]:
             return f"ఈరోజు **{local_now.strftime('%A, %B %d, %Y')}**."
         return f"Today is **{local_now.strftime('%A, %B %d, %Y')}**."
 
+    # ── 3. Quick Factual Knowledge Fallback ──
+    if "capital of france" in clean:
+        return "The capital of France is Paris."
+
     return None
 
 

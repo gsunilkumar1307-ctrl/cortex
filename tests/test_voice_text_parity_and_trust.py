@@ -8,13 +8,14 @@ from backend.persistence.encrypted_store import EncryptedMemoryStore
 from backend.agent.orchestrator import CortexOrchestrator
 from backend.capabilities import DeviceAutomation
 from backend.api.server import app, orchestrator
+from backend.core.auth import get_or_create_session_secret
 
 
 class TestVoiceTextParityAndTrust(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers={"X-Cortex-Session": get_or_create_session_secret()})
 
     def test_voice_and_text_parity_in_planning_and_approval(self):
         """Verifies voice and text routes produce identical tasks and approval requirements."""
@@ -89,6 +90,39 @@ class TestVoiceTextParityAndTrust(unittest.TestCase):
         # Prior approval hash MUST be invalidated
         self.assertNotEqual(initial_hash, updated_hash)
         self.assertEqual(updated_task["status"], "waiting_approval")
+
+    def test_acc026_shared_voice_start_then_text_revision(self):
+        """ACC-026: Begin a task using voice, revise it using text, verify context remains coherent."""
+        with patch("backend.api.server.transcribe_audio_multilingual") as mock_stt:
+            mock_stt.return_value = "send email to advisor@university.edu saying Meeting tomorrow"
+            dummy_wav = b"RIFF" + b"\x00" * 40 + b"data" + b"\x00" * 500
+            res_voice = self.client.post(
+                "/audio_chat",
+                content=dummy_wav,
+                headers={"Content-Type": "audio/wav"},
+            )
+            self.assertEqual(res_voice.status_code, 200)
+            task_voice = res_voice.json()["task"]
+            task_id = task_voice["id"]
+            orig_hash = task_voice["params"]["approval_hash"]
+            self.assertEqual(task_voice["status"], "waiting_approval")
+
+            # Revise the task using text API
+            res_edit = self.client.post(f"/tasks/{task_id}/edit", json={
+                "recipient": "advisor@university.edu",
+                "subject": "Meeting tomorrow",
+                "body": "Meeting tomorrow rescheduled to 3 PM",
+            })
+            self.assertEqual(res_edit.status_code, 200)
+            revised_task = res_edit.json()["task"]
+
+            # Task context is preserved
+            self.assertEqual(revised_task["id"], task_id)
+            self.assertEqual(revised_task["status"], "waiting_approval")
+            self.assertEqual(revised_task["params"]["recipient"], "advisor@university.edu")
+            self.assertEqual(revised_task["params"]["body"], "Meeting tomorrow rescheduled to 3 PM")
+            # Approval hash is invalidated and updated
+            self.assertNotEqual(revised_task["params"]["approval_hash"], orig_hash)
 
     def test_missing_or_blank_input_returns_400(self):
         res = self.client.post("/chat", json={"message": "   "})

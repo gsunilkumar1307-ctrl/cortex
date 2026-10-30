@@ -101,6 +101,11 @@ class PolicyEngine:
             PolicyRule(TaskCommand.PERSONAL_TASK_LIST, RiskLevel.LOW, False, False, "List personal tasks"),
             PolicyRule(TaskCommand.DAILY_BRIEFING, RiskLevel.LOW, False, False, "Compile daily briefing"),
             PolicyRule(TaskCommand.WRITE_NOTE, RiskLevel.LOW, False, False, "Create local note"),
+            PolicyRule(TaskCommand.DRAFT_WHATSAPP, RiskLevel.LOW, False, False, "Draft WhatsApp message"),
+            PolicyRule(TaskCommand.CLOSE_WINDOW, RiskLevel.LOW, False, False, "Close active application window"),
+            PolicyRule(TaskCommand.INSPECT_APP, RiskLevel.LOW, False, False, "Inspect application runtime state"),
+            PolicyRule(TaskCommand.QUIT_APP, RiskLevel.LOW, False, False, "Quit application cleanly"),
+            PolicyRule(TaskCommand.CREATE_DOCUMENT, RiskLevel.LOW, False, False, "Create text document"),
 
             # Medium Risk: Keystrokes, non-destructive file writes, scraping
             PolicyRule(TaskCommand.TYPE_TEXT, RiskLevel.MEDIUM, False, False, "Type text into target application"),
@@ -108,10 +113,12 @@ class PolicyEngine:
             PolicyRule(TaskCommand.MENU_ITEM, RiskLevel.MEDIUM, False, False, "Select application menu item"),
             PolicyRule(TaskCommand.BROWSER_SCRAPE, RiskLevel.MEDIUM, False, False, "Extract text from webpage"),
             PolicyRule(TaskCommand.WRITE_FILE, RiskLevel.MEDIUM, False, False, "Write file within sandbox"),
+            PolicyRule(TaskCommand.MOVE_FILE, RiskLevel.MEDIUM, False, False, "Move or rename file within sandbox"),
 
             # High Risk: External communication, browser actions submitting data, device control
             PolicyRule(TaskCommand.SEND_MAIL, RiskLevel.HIGH, True, True, "Send email to external recipient"),
             PolicyRule(TaskCommand.SEND_MESSAGE, RiskLevel.HIGH, True, True, "Send message via iMessage/WhatsApp/SMS"),
+            PolicyRule(TaskCommand.SEND_WHATSAPP, RiskLevel.HIGH, True, True, "Send message via WhatsApp"),
             PolicyRule(TaskCommand.BROWSER_CLICK, RiskLevel.HIGH, True, False, "Click element on external webpage"),
             PolicyRule(TaskCommand.BROWSER_TYPE, RiskLevel.HIGH, True, False, "Input data into external webpage form"),
             PolicyRule(TaskCommand.CLIPBOARD_WRITE, RiskLevel.HIGH, True, False, "Modify system clipboard"),
@@ -181,10 +188,12 @@ class PolicyEngine:
             subj = str(params.get("subject", "")).strip()
             body = str(params.get("body", "")).strip()
             normalized += f"{rec}:{subj}:{body}"
-        elif cmd_enum == TaskCommand.SEND_MESSAGE or "message" in cmd_val:
+        elif cmd_enum in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP) or "message" in cmd_val or "whatsapp" in cmd_val:
             rec = str(params.get("recipient", "")).lower().strip()
+            phone = str(params.get("phone", "")).strip()
             body = str(params.get("body", "")).strip()
-            normalized += f"{rec}:{body}"
+            channel = str(params.get("channel", "whatsapp" if "whatsapp" in cmd_val else "messages")).strip()
+            normalized += f"{rec}:{phone}:{body}:{channel}"
         elif cmd_enum == TaskCommand.WRITE_FILE:
             p = str(params.get("path", "")).strip()
             content = str(params.get("content", ""))

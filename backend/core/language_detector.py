@@ -43,6 +43,7 @@ _ROMAN_KN = {
     "yeshtu", "eshtu", "henge", "hengirutte", "hengide", "hengaagutte",
     "gottilla", "gottide", "bittogala", "bitogala", "bitogale", "nodappa",
     "nim mail", "nan mail", "mail check", "inbox nod", "mail odhu",
+    "kalisu", "kalisi", "baredhu", "bariyiri", "bari", "patra", "professorge", "sirge",
 }
 
 _ROMAN_HI = {
@@ -60,6 +61,7 @@ _ROMAN_HI = {
     "seedha", "suno", "sun", "bol", "bolo", "dekh", "dekho", "ruk", "ruko",
     "jaldi", "dhire", "accha", "theek", "bilkul", "zaroor", "samajh",
     "samajho", "mail padh", "mail bhejo", "inbox dekho", "kripya", "alvida",
+    "bhejdo", "likhdo", "sandesh", "bhejiye", "kijiye", "bataiye",
 }
 
 _ROMAN_TA = {
@@ -74,6 +76,7 @@ _ROMAN_TA = {
     "vandhaachu", "pogaren", "vaarunga", "vaanga", "vaaru",
     "romba", "konjam", "nalla", "kettalama", "seri", "mudiyuma",
     "mail paaru", "inbox paaru", "mail anuppu", "mail anupu",
+    "anuppunga", "eludhu", "eludhunga", "anupunga", "kudunga",
 }
 
 _ROMAN_TE = {
@@ -88,6 +91,7 @@ _ROMAN_TE = {
     "emiti", "emiti-ra", "evaru", "enduku",
     "chala", "konchem", "manchidi", "manchiga", "okay-ga",
     "mail cheyyi", "mail padandi", "inbox chudandi", "inbox chuu",
+    "pampandi", "pampu", "rayandi", "rayi", "pampinchu", "pampandi",
 }
 
 # Map sets → language codes (as string; we resolve at call-site)
@@ -97,6 +101,35 @@ _ROMAN_SETS: list[tuple[set[str], str]] = [
     (_ROMAN_TA, "ta"),
     (_ROMAN_TE, "te"),
 ]
+
+
+def extract_explicit_language(text: str) -> str | None:
+    """
+    Checks if the user explicitly requested an output or draft language in their message.
+    e.g., 'Answer in Kannada', 'write it in Hindi', 'in Tamil', 'ಕನ್ನಡದಲ್ಲಿ ಹೇಳು', 'हिंदी में बताओ'.
+    Returns 'en' | 'kn' | 'hi' | 'ta' | 'te' or None if no explicit request.
+    """
+    if not text:
+        return None
+    low = text.lower()
+
+    # Kannada explicit
+    if any(p in low for p in ("in kannada", "to kannada", "into kannada", "write in kannada", "kannada dalli", "ಕನ್ನಡದಲ್ಲಿ", "ಕನ್ನಡದಲ್ಲಿ ಹೇಳಿ")):
+        return "kn"
+    # Hindi explicit
+    if any(p in low for p in ("in hindi", "to hindi", "into hindi", "write in hindi", "hindi mein", "हिंदी में", "हिन्दी में")):
+        return "hi"
+    # Tamil explicit
+    if any(p in low for p in ("in tamil", "to tamil", "into tamil", "write in tamil", "tamilil", "தமிழில்")):
+        return "ta"
+    # Telugu explicit
+    if any(p in low for p in ("in telugu", "to telugu", "into telugu", "write in telugu", "telugulo", "తెలుగులో")):
+        return "te"
+    # English explicit
+    if any(p in low for p in ("in english", "to english", "into english", "write in english")):
+        return "en"
+
+    return None
 
 
 def _count_unicode(text: str) -> dict[str, int]:
@@ -230,4 +263,35 @@ _LANG_INSTRUCTION: dict[str, str] = {
 def language_instruction(lang_code: str) -> str:
     """Returns the system-prompt instruction snippet for a language code."""
     return _LANG_INSTRUCTION.get(lang_code, "")
+
+
+def resolve_language(
+    text: str,
+    preferred_language: str | None = None,
+    gemini_model: Any = None,
+) -> tuple[str, bool]:
+    """
+    Resolves the active conversation/task language with strict priority:
+      1. Explicit output language request inside text (e.g., 'in Kannada', 'ಕನ್ನಡದಲ್ಲಿ ಹೇಳು') -> (lang, True)
+      2. Explicit user setting / preferred_language from UI/session (if not 'auto') -> (lang, True)
+      3. Automatic detection from input text -> (lang, False)
+
+    Returns:
+        (resolved_language_code, is_explicit_choice)
+    """
+    # 1. In-text explicit request (ML-05)
+    explicit_in_text = extract_explicit_language(text)
+    if explicit_in_text:
+        return explicit_in_text, True
+
+    # 2. Preferred language setting (ML-01, ML-05)
+    if preferred_language and preferred_language.strip().lower() not in ("auto", "none", ""):
+        pref = preferred_language.strip().lower()
+        if pref in ("en", "kn", "hi", "ta", "te"):
+            return pref, True
+
+    # 3. Auto-detection from input text (ML-01, ML-02, ML-03)
+    detected = detect_language(text, gemini_model=gemini_model)
+    return detected, False
+
 

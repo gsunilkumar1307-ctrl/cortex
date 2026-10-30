@@ -169,6 +169,8 @@ class GmailProvider(BaseEmailProvider):
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         if not recipient:
             return {"ok": False, "message": "Recipient address is required.", "draft_id": None}
@@ -182,6 +184,8 @@ class GmailProvider(BaseEmailProvider):
                 "body": body,
                 "account": account,
                 "attachments": attachments or [],
+                "cc": cc or [],
+                "bcc": bcc or [],
             }
             self._sandbox_drafts.append(entry)
             return {
@@ -239,6 +243,8 @@ class GmailProvider(BaseEmailProvider):
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         if not recipient:
             return {"ok": False, "provider": "gmail", "status": "error", "error": "Recipient required", "message": "Recipient address is required.", "message_id": None}
@@ -252,6 +258,8 @@ class GmailProvider(BaseEmailProvider):
                 "body": body,
                 "account": account,
                 "attachments": attachments or [],
+                "cc": cc or [],
+                "bcc": bcc or [],
             }
             self._sandbox_sent.append(entry)
             return {

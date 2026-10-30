@@ -3,11 +3,12 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from backend.api.server import app, _tts_cache
+from backend.core.auth import get_or_create_session_secret
 
 
 class TestVoiceTTSAndInterrupt(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers={"X-Cortex-Session": get_or_create_session_secret()})
         _tts_cache.clear()
 
     def test_tts_empty_text_returns_400(self):

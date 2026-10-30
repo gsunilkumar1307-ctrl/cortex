@@ -135,6 +135,36 @@ class ToolRegistry:
                 description="Safely evaluate mathematical expressions (arithmetic, exponents)",
                 expected_state_desc="Numerical computation result returned",
             ),
+            ToolDefinition(
+                name="draft_whatsapp",
+                description="Prepare and stage a WhatsApp message to a contact",
+                expected_state_desc="WhatsApp message staged with recipient and composed text",
+            ),
+            ToolDefinition(
+                name="send_whatsapp",
+                description="Send an approved WhatsApp message to an authorized contact",
+                expected_state_desc="WhatsApp message submitted and dispatched",
+            ),
+            ToolDefinition(
+                name="close_window",
+                description="Close frontmost active window without quitting application process",
+                expected_state_desc="Front window closed",
+            ),
+            ToolDefinition(
+                name="inspect_application_state",
+                description="Inspect whether an application is running and its open windows",
+                expected_state_desc="Application process status and window count retrieved",
+            ),
+            ToolDefinition(
+                name="move_file",
+                description="Move or rename a file within the permitted sandbox",
+                expected_state_desc="File exists at target destination path and removed from source",
+            ),
+            ToolDefinition(
+                name="create_document",
+                description="Create a structured markdown or text document in user workspace",
+                expected_state_desc="Document created with expected title and body",
+            ),
         ]
         for t in defaults:
             self.register(t)

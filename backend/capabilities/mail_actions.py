@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
+import time
 from typing import Any
 
 
@@ -15,8 +17,17 @@ def clear_mail_records() -> None:
     _sent_records.clear()
 
 
-def _apple_string(val: str) -> str:
-    return '"' + str(val).replace("\\", "\\\\").replace('"', '\\"') + '"'
+def _apple_string(val: Any) -> str:
+    if val is None:
+        return '""'
+    s = str(val)
+    # Strip null bytes to prevent POSIX subprocess ValueError
+    s = s.replace("\x00", "")
+    # Normalize line endings
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    # Escape backslashes first, then quotes
+    s = s.replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + s + '"'
 
 
 class MailAutomation:
@@ -137,76 +148,206 @@ class MailAutomation:
         except Exception as e:
             return {"ok": False, "emails": [], "message": f"Could not access Apple Mail: {e}"}
 
-    def draft_mail(self, recipient: str, subject: str, body: str) -> dict[str, Any]:
+    def draft_mail(
+        self,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Creates a new draft email in Apple Mail and opens it."""
         if not recipient:
             return {"ok": False, "message": "Recipient email address is required."}
         subject = subject or "No Subject"
         body = body or ""
 
-        record = {"recipient": recipient, "subject": subject, "body": body}
-        self._draft_records.append(record)
+        if attachments:
+            for att_path in attachments:
+                if att_path and not os.path.exists(att_path):
+                    return {"ok": False, "message": f"Attachment file not found: {att_path}", "error": f"Attachment file not found: {att_path}"}
+
+        record = {
+            "recipient": recipient,
+            "subject": subject,
+            "body": body,
+            "account": account,
+            "attachments": attachments or [],
+            "cc": cc or [],
+            "bcc": bcc or [],
+            "dry_run": bool(self.dry_run or self.system != "darwin"),
+        }
         if self.dry_run or self.system != "darwin":
+            self._draft_records.append(record)
             return {
                 "ok": True,
                 "message": f"Draft created for {recipient} with subject '{subject}'.",
-                "data": {"recipient": recipient, "subject": subject, "body": body},
+                "data": record,
             }
 
-        script = f"""
-        tell application "Mail"
-            activate
-            set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:true}}
-            tell newMsg
-                make new to recipient at end of to recipients with properties {{address:{_apple_string(recipient)}}}
-            end tell
-        end tell
-        """
+        script_parts = [
+            'tell application "Mail"',
+            '    activate',
+            f'    set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:true}}',
+            '    tell newMsg',
+        ]
+        to_recipients = [r.strip() for r in re.split(r"[,;]|\band\b", recipient) if r.strip()]
+        for to_rec in (to_recipients or [recipient]):
+            script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
+        if account:
+            script_parts.append(f'        set sender of newMsg to {_apple_string(account)}')
+        for c in (cc or []):
+            if c:
+                script_parts.append(f'        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(c)}}}')
+        for b in (bcc or []):
+            if b:
+                script_parts.append(f'        make new bcc recipient at end of bcc recipients with properties {{address:{_apple_string(b)}}}')
+        for a in (attachments or []):
+            if a:
+                abs_a = os.path.abspath(a)
+                script_parts.append(f'        make new attachment with properties {{file name:(POSIX file {_apple_string(abs_a)})}} at after the last paragraph of content')
+        script_parts.extend([
+            '    end tell',
+            '    save newMsg',
+            'end tell'
+        ])
+        script = "\n".join(script_parts)
+
         try:
-            subprocess.run(["osascript", "-e", script], check=True)
+            subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True, timeout=5)
+            self._draft_records.append(record)
             return {
                 "ok": True,
                 "message": f"Created email draft to {recipient} with subject '{subject}'.",
-                "data": {"recipient": recipient, "subject": subject, "body": body},
+                "data": record,
             }
+        except subprocess.CalledProcessError as e:
+            err = e.stderr.strip() if e.stderr else str(e)
+            if "-1743" in err or "Not authorized to send Apple events" in err:
+                return {
+                    "ok": False,
+                    "message": "macOS Automation Permission Denied: Cortex requires permission to control Apple Mail. Please enable it in System Settings > Privacy & Security > Automation > Cortex.",
+                    "error": "macOS Automation Permission Denied",
+                }
+            return {"ok": False, "message": f"Failed to draft email: {err}", "error": err}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "message": "Failed to draft email: Apple Mail automation timed out.", "error": "TimeoutExpired"}
         except Exception as e:
-            return {"ok": False, "message": f"Failed to draft email: {e}"}
+            return {"ok": False, "message": f"Failed to draft email: {e}", "error": str(e)}
 
-    def send_mail(self, recipient: str, subject: str, body: str) -> dict[str, Any]:
+    def create_email_draft(
+        self,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Creates a validated structured draft in Apple Mail (distinct from generic typing).
+        Populates To, Subject, and Body fields via the email adapter."""
+        return self.draft_mail(
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            account=account,
+            attachments=attachments,
+            cc=cc,
+            bcc=bcc,
+        )
+
+    def send_mail(
+        self,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Sends an email directly via Apple Mail (requires user approval prior to calling)."""
         if not recipient:
             return {"ok": False, "message": "Recipient email address is required."}
         subject = subject or "No Subject"
         body = body or ""
 
-        record = {"recipient": recipient, "subject": subject, "body": body}
-        self._sent_records.append(record)
+        if attachments:
+            for att_path in attachments:
+                if att_path and not os.path.exists(att_path):
+                    return {"ok": False, "message": f"Attachment file not found: {att_path}", "error": f"Attachment file not found: {att_path}"}
+
+        record = {
+            "recipient": recipient,
+            "subject": subject,
+            "body": body,
+            "account": account,
+            "attachments": attachments or [],
+            "cc": cc or [],
+            "bcc": bcc or [],
+            "timestamp": time.time(),
+            "dry_run": bool(self.dry_run or self.system != "darwin"),
+        }
 
         if self.dry_run or self.system != "darwin":
+            self._sent_records.append(record)
             return {
                 "ok": True,
                 "message": f"Sent email to {recipient} with subject '{subject}'.",
-                "data": {"recipient": recipient, "subject": subject, "body": body},
+                "data": record,
             }
 
-        script = f"""
-        tell application "Mail"
-            set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:false}}
-            tell newMsg
-                make new to recipient at end of to recipients with properties {{address:{_apple_string(recipient)}}}
-                send
-            end tell
-        end tell
-        """
+        script_parts = [
+            'tell application "Mail"',
+            f'    set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:false}}',
+            '    tell newMsg',
+        ]
+        to_recipients = [r.strip() for r in re.split(r"[,;]|\band\b", recipient) if r.strip()]
+        for to_rec in (to_recipients or [recipient]):
+            script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
+        if account:
+            script_parts.append(f'        set sender of newMsg to {_apple_string(account)}')
+        for c in (cc or []):
+            if c:
+                script_parts.append(f'        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(c)}}}')
+        for b in (bcc or []):
+            if b:
+                script_parts.append(f'        make new bcc recipient at end of bcc recipients with properties {{address:{_apple_string(b)}}}')
+        for a in (attachments or []):
+            if a:
+                abs_a = os.path.abspath(a)
+                script_parts.append(f'        make new attachment with properties {{file name:(POSIX file {_apple_string(abs_a)})}} at after the last paragraph of content')
+        script_parts.extend([
+            '        send',
+            '    end tell',
+            'end tell'
+        ])
+        script = "\n".join(script_parts)
+
         try:
-            subprocess.run(["osascript", "-e", script], check=True)
+            subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True, timeout=5)
+            self._sent_records.append(record)
             return {
                 "ok": True,
                 "message": f"Sent email to {recipient} with subject '{subject}'.",
-                "data": {"recipient": recipient, "subject": subject, "body": body},
+                "data": record,
             }
+        except subprocess.CalledProcessError as e:
+            err = e.stderr.strip() if e.stderr else str(e)
+            if "-1743" in err or "Not authorized to send Apple events" in err:
+                return {
+                    "ok": False,
+                    "message": "macOS Automation Permission Denied: Cortex requires permission to control Apple Mail. Please enable it in System Settings > Privacy & Security > Automation > Cortex.",
+                    "error": "macOS Automation Permission Denied",
+                }
+            return {"ok": False, "message": f"Failed to send email: {err}", "error": err}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "message": "Failed to send email: Apple Mail automation timed out.", "error": "TimeoutExpired"}
         except Exception as e:
-            return {"ok": False, "message": f"Failed to send email: {e}"}
+            return {"ok": False, "message": f"Failed to send email: {e}", "error": str(e)}
 
     def verify_draft_created(self, recipient: str, subject: str) -> dict[str, Any]:
         """Verifies that an email draft exists for the recipient and subject."""
@@ -230,7 +371,7 @@ class MailAutomation:
             end tell
             """
             try:
-                out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True).stdout.strip()
+                out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5).stdout.strip()
                 if out == "FOUND":
                     return {"verified": True, "evidence": f"Draft confirmed in Apple Mail drafts mailbox with subject '{subject}'"}
             except Exception:
@@ -265,7 +406,7 @@ class MailAutomation:
             end tell
             """
             try:
-                out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True).stdout.strip()
+                out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5).stdout.strip()
                 if out == "FOUND":
                     return {"verified": True, "evidence": f"Confirmed message exists in Apple Mail 'Sent' mailbox for {recipient}"}
             except Exception:
@@ -426,7 +567,7 @@ class MailAutomation:
             end tell
             """
             try:
-                subprocess.run(["osascript", "-e", script], check=False)
+                subprocess.run(["osascript", "-e", script], check=False, timeout=5)
             except Exception:
                 pass
         return {"ok": True, "message": f"Draft for {recipient} removed."}

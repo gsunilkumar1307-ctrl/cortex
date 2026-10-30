@@ -2,13 +2,225 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
+
+try:
+    from backend.core.contracts import (
+        ContactResolutionStatus,
+        VerifiedContact,
+        ContactResolutionResult,
+    )
+except ImportError:
+    from core.contracts import (
+        ContactResolutionStatus,
+        VerifiedContact,
+        ContactResolutionResult,
+    )
+
+
+class WhatsAppContactSource:
+    """Abstract interface for a verified WhatsApp contact source."""
+
+    def get_exact_matches(self, name_query: str) -> list[VerifiedContact]:
+        raise NotImplementedError
+
+    def get_suggestions(self, query: str) -> list[VerifiedContact]:
+        raise NotImplementedError
+
+    def get_contact_by_phone(self, phone: str) -> VerifiedContact | None:
+        raise NotImplementedError
+
+    def is_available(self) -> bool:
+        return True
+
+    def is_stale(self) -> bool:
+        return False
+
+    @property
+    def source_name(self) -> str:
+        return "user_authorized_contacts"
+
+
+class UserAuthorizedContactStore(WhatsAppContactSource):
+    """Authoritative, user-authorized contact source for WhatsApp.
+    Enforces strict exact-match semantics, rejects guessing/substitutions,
+    and supports fail-closed availability and staleness controls.
+    """
+
+    def __init__(
+        self,
+        contacts: list[dict[str, Any]] | None = None,
+        memory_store: Any = None,
+        available: bool = True,
+        stale: bool = False,
+        source_name: str = "user_authorized_contacts",
+    ) -> None:
+        self.memory = memory_store
+        self._available = available
+        self._stale = stale
+        self._source_name = source_name
+        self._contacts: list[VerifiedContact] = []
+
+        if contacts is not None:
+            for c in contacts:
+                self._contacts.append(
+                    VerifiedContact(
+                        id=c.get("id", str(uuid4())[:8]),
+                        name=c["name"].strip(),
+                        phone=c["phone"].strip(),
+                        source=c.get("source", self._source_name),
+                        is_verified=c.get("is_verified", True),
+                        metadata={"role": c.get("role", "contact")},
+                    )
+                )
+        else:
+            loaded_from_mem = False
+            if self.memory and hasattr(self.memory, "list"):
+                try:
+                    items = self.memory.list()
+                    for item in items:
+                        if isinstance(item, dict) and item.get("category") in ("contact", "contacts"):
+                            payload = item.get("payload") or {}
+                            if isinstance(payload, dict) and payload.get("name") and payload.get("phone"):
+                                self._contacts.append(
+                                    VerifiedContact(
+                                        id=payload.get("id", str(uuid4())[:8]),
+                                        name=payload["name"].strip(),
+                                        phone=payload["phone"].strip(),
+                                        source=payload.get("source", self._source_name),
+                                        is_verified=payload.get("is_verified", True),
+                                        metadata={"role": payload.get("role", "contact")},
+                                    )
+                                )
+                                loaded_from_mem = True
+                except Exception:
+                    pass
+
+            if not loaded_from_mem and not self._contacts:
+                seed = [
+                    {"id": "c_rahul", "name": "Rahul", "phone": "+91 98765 43210", "role": "colleague"},
+                    {"id": "c_rahul_sharma", "name": "Rahul Sharma", "phone": "+91 98765 43210", "role": "colleague"},
+                    {"id": "c_rahul_kn", "name": "ರಾಹುಲ್", "phone": "+91 98765 43210", "role": "colleague"},
+                    {"id": "c_priya", "name": "Priya Patel", "phone": "+91 98765 67890", "role": "team lead"},
+                    {"id": "c_ananya", "name": "Ananya Rao", "phone": "+91 98765 54321", "role": "researcher"},
+                    {"id": "c_alex_mor", "name": "Alex Morgan", "phone": "+91 98765 11111", "role": "designer"},
+                    {"id": "c_alex_eng", "name": "Alex Chen", "phone": "+91 98765 22222", "role": "engineer"},
+                ]
+                for c in seed:
+                    self._contacts.append(
+                        VerifiedContact(
+                            id=c.get("id", str(uuid4())[:8]),
+                            name=c["name"],
+                            phone=c["phone"],
+                            source=self._source_name,
+                            is_verified=True,
+                            metadata={"role": c.get("role", "contact")},
+                        )
+                    )
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def set_available(self, available: bool) -> None:
+        self._available = available
+
+    def is_stale(self) -> bool:
+        return self._stale
+
+    def set_stale(self, stale: bool) -> None:
+        self._stale = stale
+
+    @property
+    def source_name(self) -> str:
+        return self._source_name
+
+    def add_contact(self, name: str, phone: str, role: str = "contact", id: str | None = None, source: str | None = None) -> VerifiedContact:
+        vc = VerifiedContact(
+            id=id or str(uuid4())[:8],
+            name=name.strip(),
+            phone=phone.strip(),
+            source=source or self._source_name,
+            is_verified=True,
+            metadata={"role": role},
+        )
+        self._contacts.append(vc)
+        if self.memory and hasattr(self.memory, "put"):
+            try:
+                self.memory.put(f"contact_{vc.id}", "contact", vc.to_dict())
+            except Exception:
+                pass
+        return vc
+
+    def import_contacts(self, contacts: list[dict[str, Any]], source: str = "user_authorized_contacts") -> list[VerifiedContact]:
+        imported = []
+        for c in contacts:
+            if c.get("name") and c.get("phone"):
+                vc = self.add_contact(
+                    name=c["name"],
+                    phone=c["phone"],
+                    role=c.get("role", "contact"),
+                    id=c.get("id"),
+                    source=source,
+                )
+                imported.append(vc)
+        return imported
+
+    def remove_contact(self, contact_id: str) -> bool:
+        initial_len = len(self._contacts)
+        self._contacts = [c for c in self._contacts if c.id != contact_id]
+        return len(self._contacts) < initial_len
+
+    def get_exact_matches(self, name_query: str) -> list[VerifiedContact]:
+        """Strict exact match: normalized casefold comparison.
+        Never does substring, fuzzy, or phonetic matching.
+        """
+        if not self._available or self._stale:
+            return []
+
+        q_norm = name_query.strip().casefold()
+        matches = []
+        for c in self._contacts:
+            if c.name.strip().casefold() == q_norm:
+                matches.append(c)
+        return matches
+
+    def get_suggestions(self, query: str) -> list[VerifiedContact]:
+        """Finds partial/prefix matches for suggestion only.
+        Suggestions are NEVER automatically selected as exact matches.
+        """
+        if not self._available or self._stale:
+            return []
+
+        q_norm = query.strip().casefold()
+        if len(q_norm) < 2:
+            return []
+
+        suggestions = []
+        for c in self._contacts:
+            c_norm = c.name.strip().casefold()
+            if q_norm in c_norm or any(part == q_norm for part in c_norm.split()):
+                if c_norm != q_norm:
+                    suggestions.append(c)
+        return suggestions
+
+    def get_contact_by_phone(self, phone: str) -> VerifiedContact | None:
+        if not self._available or self._stale:
+            return None
+        clean_target = re.sub(r"[^\d+]", "", phone)
+        for c in self._contacts:
+            clean_c = re.sub(r"[^\d+]", "", c.phone)
+            if clean_c == clean_target:
+                return c
+        return None
 
 
 @dataclass
 class ResolvedRecipient:
     name: str = ""
     email: str = ""
+    phone: str = ""
     role: str = "unknown"
     confidence: float = 0.0
     source: str = "unknown"  # direct, mailbox_search, contacts, thread, manual
@@ -20,6 +232,7 @@ class ResolvedRecipient:
         return {
             "name": self.name,
             "email": self.email,
+            "phone": self.phone,
             "role": self.role,
             "confidence": self.confidence,
             "source": self.source,
@@ -86,9 +299,17 @@ class RecipientResolver:
         },
     ]
 
-    def __init__(self, mail_automation: Any = None, memory_store: Any = None) -> None:
+    def __init__(
+        self,
+        mail_automation: Any = None,
+        memory_store: Any = None,
+        contact_source: WhatsAppContactSource | None = None,
+        whatsapp_adapter: Any = None,
+    ) -> None:
         self.mail_automation = mail_automation
         self.memory = memory_store
+        self.contact_source = contact_source or UserAuthorizedContactStore(memory_store=memory_store)
+        self.whatsapp_adapter = whatsapp_adapter
 
     def resolve(
         self,
@@ -102,27 +323,43 @@ class RecipientResolver:
         combined_text = f"{raw_query} {full_message}".lower()
 
         # ── 1. Direct Email Address Detection ──────────────────────────────────
-        direct_email_match = re.search(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", raw_query)
-        if direct_email_match:
-            email_addr = direct_email_match.group(1).lower()
-            name_part = raw_query.replace(email_addr, "").strip().strip("<>()[]\"'")
-            if not name_part or name_part.lower() == email_addr:
-                user_part = email_addr.split("@")[0]
-                name_part = user_part.replace(".", " ").replace("_", " ").title()
+        direct_emails = re.findall(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", raw_query)
+        if direct_emails:
+            if len(direct_emails) == 1:
+                email_addr = direct_emails[0].lower()
+                name_part = raw_query.replace(email_addr, "").strip().strip("<>()[]\"'")
+                name_part = re.sub(r"^(?:to|send\s+email\s+to|send\s+mail\s+to|mail\s+to|email\s+to)\s+", "", name_part, flags=re.IGNORECASE).strip()
+                # Never convert username into a presumed personal name
+                verified_name = name_part if (name_part and "@" not in name_part and len(name_part.split()) <= 6) else ""
 
-            role = self._infer_role_from_text(f"{raw_query} {full_message}")
-            return ResolutionResult(
-                status="resolved",
-                recipient=ResolvedRecipient(
-                    name=name_part or email_addr,
-                    email=email_addr,
-                    role=role,
-                    confidence=1.0,
-                    source="direct",
-                    context_notes="Direct email address provided by user",
-                ),
-                query=raw_query,
-            )
+                role = self._infer_role_from_text(f"{raw_query} {full_message}")
+                return ResolutionResult(
+                    status="resolved",
+                    recipient=ResolvedRecipient(
+                        name=verified_name or email_addr,
+                        email=email_addr,
+                        role=role,
+                        confidence=1.0,
+                        source="direct",
+                        context_notes="Direct email address provided by user",
+                    ),
+                    query=raw_query,
+                )
+            else:
+                clean_emails = [e.lower() for e in direct_emails]
+                combined_emails = ", ".join(clean_emails)
+                return ResolutionResult(
+                    status="resolved",
+                    recipient=ResolvedRecipient(
+                        name=combined_emails,
+                        email=combined_emails,
+                        role="multiple",
+                        confidence=1.0,
+                        source="direct",
+                        context_notes=f"Multiple direct email addresses: {combined_emails}",
+                    ),
+                    query=raw_query,
+                )
 
         # ── 2. Connected Mailbox Search ────────────────────────────────────────
         mailbox_candidates = self._search_mailbox(raw_query, combined_text)
@@ -213,6 +450,381 @@ class RecipientResolver:
             status="need_clarification",
             clarification_prompt=prompt,
             query=raw_query,
+        )
+
+    def resolve_messaging_contact(
+        self,
+        query: str,
+        full_message: str = "",
+        channel: str = "whatsapp",
+    ) -> ContactResolutionResult:
+        """Resolve a contact name or phone number for WhatsApp with strict fail-closed exact matching."""
+        raw_query = query.strip()
+        cleaned_query = re.sub(
+            r"^(?:to|message|send\s+whatsapp\s+to|send\s+message\s+to|text)\s+",
+            "",
+            raw_query,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned_query = re.sub(
+            r"\s+(?:saying|that\s+says|with\s+message|say).*$",
+            "",
+            cleaned_query,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        # 0. Visible WhatsApp Desktop UI Adapter Check (if configured)
+        if getattr(self, "whatsapp_adapter", None) is not None:
+            try:
+                wa_state = self.whatsapp_adapter.detect_state()
+            except Exception as e:
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt=f"WhatsApp Desktop interface error: {e}",
+                    source="whatsapp_desktop_ui",
+                )
+
+            state_val = getattr(wa_state, "value", str(wa_state))
+            if state_val == "app_not_running":
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.WHATSAPP_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp Desktop application is not available or running. Please open WhatsApp Desktop and ensure you are logged in.",
+                    source="whatsapp_desktop_ui",
+                )
+            if state_val == "logged_out":
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp Desktop is currently logged out. Please log into WhatsApp Desktop before messages can be routed.",
+                    source="whatsapp_desktop_ui",
+                )
+            if state_val == "error":
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp search selector is missing or UI is unreadable.",
+                    source="whatsapp_desktop_ui",
+                )
+            if state_val == "modal_dialog_present":
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp Desktop has an active modal dialog open. Please dismiss the modal dialog before searching.",
+                    source="whatsapp_desktop_ui",
+                )
+            if state_val == "unsupported_ui_structure":
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp Desktop UI hierarchy could not be parsed by accessibility inspection. Manual contact selection required.",
+                    source="whatsapp_desktop_ui",
+                )
+
+            # Direct Phone Number Detection with UI adapter
+            phone_match = re.search(r"^(\+?\d[\d\s-]{8,}\d)$", cleaned_query)
+            if phone_match:
+                clean_phone = re.sub(r"[^\d+]", "", phone_match.group(1))
+                digits_only = re.sub(r"\D", "", clean_phone)
+                if len(digits_only) < 10 or len(digits_only) > 15:
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.NO_MATCH,
+                        query=raw_query,
+                        clarification_prompt=f"The phone number '{clean_phone}' is invalid. Please provide a valid 10-15 digit phone number.",
+                        source="whatsapp_desktop_ui",
+                    )
+                unverified = VerifiedContact(
+                    id=f"direct_{clean_phone}",
+                    name=clean_phone,
+                    phone=clean_phone,
+                    source="user_provided_unverified",
+                    is_verified=False,
+                    metadata={"type": "unverified_direct_number", "evidence_label": "direct_unverified_number"},
+                )
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.INVALID_OR_UNVERIFIED_NUMBER,
+                    query=raw_query,
+                    contact=unverified,
+                    candidates=[unverified],
+                    clarification_prompt=(
+                        f"You provided the direct phone number '{clean_phone}'. "
+                        f"This number is not in your verified contacts. "
+                        f"Please confirm if you want to send a WhatsApp message to this destination."
+                    ),
+                    source="whatsapp_desktop_ui",
+                )
+
+            # Query visible contacts from adapter
+            try:
+                candidates = self.whatsapp_adapter.search_visible_contacts(cleaned_query)
+            except PermissionError as pe:
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="macOS Accessibility or AppleEvents permission denied for WhatsApp Desktop. Please enable Accessibility permission in macOS System Settings -> Privacy & Security -> Accessibility.",
+                    source="whatsapp_desktop_ui",
+                )
+            except TimeoutError:
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp UI search timed out.",
+                    source="whatsapp_desktop_ui",
+                )
+            except Exception as e:
+                err_msg = str(e)
+                if "modal" in err_msg.lower():
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                        query=raw_query,
+                        clarification_prompt="WhatsApp Desktop has an active modal dialog open. Please dismiss the modal dialog before searching.",
+                        source="whatsapp_desktop_ui",
+                    )
+                if "permission" in err_msg.lower() or "-1743" in err_msg:
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                        query=raw_query,
+                        clarification_prompt="macOS Accessibility or AppleEvents permission denied for WhatsApp Desktop. Please enable Accessibility permission in macOS System Settings -> Privacy & Security -> Accessibility.",
+                        source="whatsapp_desktop_ui",
+                    )
+                if "unsupported" in err_msg.lower():
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                        query=raw_query,
+                        clarification_prompt="WhatsApp Desktop UI hierarchy could not be parsed by accessibility inspection. Manual contact selection required.",
+                        source="whatsapp_desktop_ui",
+                    )
+                if "stale" in err_msg.lower():
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.CONTACT_DATA_STALE,
+                        query=raw_query,
+                        clarification_prompt="WhatsApp UI state is stale; window must be refreshed.",
+                        source="whatsapp_desktop_ui",
+                    )
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt=f"WhatsApp search error: {err_msg}",
+                    source="whatsapp_desktop_ui",
+                )
+
+            if len(candidates) == 0:
+                # WA-CONTACT-12: Synthetic SQLite contact exists but no live UI match -> FAIL CLOSED
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.NO_MATCH,
+                    query=raw_query,
+                    clarification_prompt=f"No contact found for '{cleaned_query}' in WhatsApp visible UI.",
+                    source="whatsapp_desktop_ui",
+                )
+
+            elif len(candidates) > 1:
+                # Multiple candidates -> Disambiguation
+                lines = [f"Multiple visible WhatsApp candidates found matching '{cleaned_query}':"]
+                cand_list = []
+                for i, c in enumerate(candidates, 1):
+                    phone_str = f" ({c.phone_number})" if c.phone_number else " [Phone not visible]"
+                    lines.append(f"{i}) {c.display_name}{phone_str}")
+                    cand_list.append(VerifiedContact(
+                        id=f"wa_cand_{i}",
+                        name=c.display_name,
+                        phone=c.phone_number or "",
+                        source="whatsapp_desktop_ui",
+                        is_verified=bool(c.phone_number),
+                        metadata={"evidence_label": c.evidence_label},
+                    ))
+                lines.append("Which contact would you like to message?")
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.MULTIPLE_MATCHES,
+                    query=raw_query,
+                    candidates=cand_list,
+                    clarification_prompt="\n".join(lines),
+                    source="whatsapp_desktop_ui",
+                )
+
+            else:
+                c = candidates[0]
+                q_norm = cleaned_query.strip().casefold()
+                c_norm = c.display_name.strip().casefold()
+
+                # Partial match is NEVER auto-selected! (Scenario 3)
+                if q_norm != c_norm:
+                    sugg = VerifiedContact(
+                        id="wa_cand_0",
+                        name=c.display_name,
+                        phone=c.phone_number or "",
+                        source="whatsapp_desktop_ui",
+                        is_verified=False,
+                        metadata={"evidence_label": c.evidence_label},
+                    )
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.NO_MATCH,
+                        query=raw_query,
+                        suggestions=[sugg],
+                        clarification_prompt=f"No exact match found in WhatsApp for '{cleaned_query}'. Visible suggestion: {c.display_name}. Reply to confirm or provide their full phone number.",
+                        source="whatsapp_desktop_ui",
+                    )
+
+                # Exact match
+                if c.phone_number:
+                    # Scenario 2: Exact name with visible phone number
+                    matched_vc = VerifiedContact(
+                        id="wa_cand_0",
+                        name=c.display_name,
+                        phone=c.phone_number,
+                        source="whatsapp_desktop_ui",
+                        is_verified=True,
+                        metadata={"evidence_label": "visible_ui_with_phone", "phone_verified": True},
+                    )
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.EXACT_MATCH,
+                        query=raw_query,
+                        contact=matched_vc,
+                        candidates=[matched_vc],
+                        source="whatsapp_desktop_ui",
+                    )
+                else:
+                    # Scenario 1: Exact name with one candidate but NO visible phone identifier
+                    matched_vc = VerifiedContact(
+                        id="wa_cand_0",
+                        name=c.display_name,
+                        phone="",
+                        source="whatsapp_desktop_ui",
+                        is_verified=False,
+                        metadata={"evidence_label": "visible_ui_name_only", "phone_verified": False},
+                    )
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.EXACT_MATCH,
+                        query=raw_query,
+                        contact=matched_vc,
+                        candidates=[matched_vc],
+                        source="whatsapp_desktop_ui",
+                    )
+
+        # 1. Fail-closed if contact source is unavailable or stale (WA-CONTACT-08)
+        if hasattr(self, "contact_source") and self.contact_source:
+            if not self.contact_source.is_available():
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.SOURCE_UNAVAILABLE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp contact source is currently unavailable. Contact resolution cannot proceed safely.",
+                    source=self.contact_source.source_name,
+                )
+            if self.contact_source.is_stale():
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.CONTACT_DATA_STALE,
+                    query=raw_query,
+                    clarification_prompt="WhatsApp contact data is stale and must be refreshed before messages can be routed.",
+                    source=self.contact_source.source_name,
+                )
+
+        # 2. Direct Phone Number Detection
+        phone_match = re.search(r"^(\+?\d[\d\s-]{8,}\d)$", cleaned_query)
+        if phone_match:
+            clean_phone = re.sub(r"[^\d+]", "", phone_match.group(1))
+            # Check if this phone number belongs to a known verified contact
+            if hasattr(self, "contact_source") and self.contact_source:
+                known_contact = self.contact_source.get_contact_by_phone(clean_phone)
+                if known_contact:
+                    contact_copy = VerifiedContact(
+                        id=known_contact.id,
+                        name=known_contact.name,
+                        phone=clean_phone,
+                        source=known_contact.source,
+                        is_verified=known_contact.is_verified,
+                        metadata=known_contact.metadata,
+                    )
+                    return ContactResolutionResult(
+                        status=ContactResolutionStatus.EXACT_MATCH,
+                        query=raw_query,
+                        contact=contact_copy,
+                        candidates=[contact_copy],
+                        source=self.contact_source.source_name,
+                    )
+            # Direct unverified number (WA-CONTACT-13)
+            digits_only = re.sub(r"\D", "", clean_phone)
+            if len(digits_only) < 10 or len(digits_only) > 15:
+                return ContactResolutionResult(
+                    status=ContactResolutionStatus.NO_MATCH,
+                    query=raw_query,
+                    clarification_prompt=f"The phone number '{clean_phone}' is invalid. Please provide a valid 10-15 digit phone number.",
+                    source=self.contact_source.source_name if hasattr(self, "contact_source") and self.contact_source else "unknown",
+                )
+            unverified = VerifiedContact(
+                id=f"direct_{clean_phone}",
+                name=clean_phone,
+                phone=clean_phone,
+                source="user_provided_unverified",
+                is_verified=False,
+                metadata={"type": "unverified_direct_number"},
+            )
+            return ContactResolutionResult(
+                status=ContactResolutionStatus.INVALID_OR_UNVERIFIED_NUMBER,
+                query=raw_query,
+                contact=unverified,
+                candidates=[unverified],
+                clarification_prompt=(
+                    f"You provided the direct phone number '{clean_phone}'. "
+                    f"This number is not in your verified contacts. "
+                    f"Please confirm if you want to send a WhatsApp message to this destination "
+                    f"(reply 'yes' to confirm or provide a contact name)."
+                ),
+                source=self.contact_source.source_name if hasattr(self, "contact_source") and self.contact_source else "user_provided",
+            )
+
+        # 3. Exact Match Resolution (Strict normalized casefold)
+        exact_matches = self.contact_source.get_exact_matches(cleaned_query) if hasattr(self, "contact_source") and self.contact_source else []
+
+        if len(exact_matches) == 1:
+            matched = exact_matches[0]
+            return ContactResolutionResult(
+                status=ContactResolutionStatus.EXACT_MATCH,
+                query=raw_query,
+                contact=matched,
+                candidates=exact_matches,
+                source=self.contact_source.source_name,
+            )
+
+        elif len(exact_matches) > 1:
+            # Duplicate exact names -> trigger disambiguation with distinguishing details
+            lines = [f"Multiple verified contacts found matching '{cleaned_query}':"]
+            for i, cand in enumerate(exact_matches, 1):
+                phone_display = f" ({cand.phone})" if cand.phone else ""
+                role_display = f" — {cand.metadata.get('role', 'contact')}" if cand.metadata.get("role") and cand.metadata.get("role") != "contact" else ""
+                lines.append(f"{i}) {cand.name}{phone_display}{role_display}")
+            lines.append("Which person would you like to message?")
+            prompt = "\n".join(lines)
+
+            return ContactResolutionResult(
+                status=ContactResolutionStatus.MULTIPLE_MATCHES,
+                query=raw_query,
+                candidates=exact_matches,
+                clarification_prompt=prompt,
+                source=self.contact_source.source_name,
+            )
+
+        # 4. No Exact Match -> check suggestions (Suggestions are NEVER automatically selected)
+        suggestions = self.contact_source.get_suggestions(cleaned_query) if hasattr(self, "contact_source") and self.contact_source else []
+        if suggestions:
+            lines = [f"No exact contact found for '{cleaned_query}'. Did you mean one of these unverified suggestions:"]
+            for i, sugg in enumerate(suggestions, 1):
+                phone_display = f" ({sugg.phone})" if sugg.phone else ""
+                role_display = f" — {sugg.metadata.get('role', 'contact')}" if sugg.metadata.get("role") and sugg.metadata.get("role") != "contact" else ""
+                lines.append(f"{i}) {sugg.name}{phone_display}{role_display}")
+            lines.append("Or reply with the correct name or full phone number.")
+            prompt = "\n".join(lines)
+        else:
+            prompt = (
+                f"No contact found for '{cleaned_query}' in your verified contacts. "
+                f"Please check the spelling or provide their phone number directly."
+            )
+
+        return ContactResolutionResult(
+            status=ContactResolutionStatus.NO_MATCH,
+            query=raw_query,
+            suggestions=suggestions,
+            clarification_prompt=prompt,
+            source=self.contact_source.source_name if hasattr(self, "contact_source") and self.contact_source else "unknown",
         )
 
     # ── Internal Search Methods ────────────────────────────────────────────────
@@ -350,10 +962,14 @@ class RecipientResolver:
         results: list[ResolvedRecipient] = []
         for entry in self.KNOWN_DIRECTORY:
             entry_keywords = entry.get("keywords", [])
-            blob = f"{entry['name']} {entry['role']} {entry['department']} {entry['institution']}".lower()
+            name = entry.get("name", "")
+            role = entry.get("role", "")
+            dept = entry.get("department", "")
+            inst = entry.get("institution", "")
+            blob = f"{name} {role} {dept} {inst}".lower()
             score = self._score_match(keywords, blob)
             # Boost if institution explicitly matches
-            if preferred_institution and preferred_institution.lower() in entry["institution"].lower():
+            if preferred_institution and preferred_institution.lower() in inst.lower():
                 score += 0.3
             elif any(inst in combined_text for inst in ("rvce", "rv college", "bmsce", "bms college")):
                 for inst_token in ("rvce", "rv college", "bmsce", "bms college"):
@@ -363,14 +979,14 @@ class RecipientResolver:
             if score >= 0.5:
                 results.append(
                     ResolvedRecipient(
-                        name=entry["name"],
-                        email=entry["email"],
-                        role=entry["role"],
+                        name=name,
+                        email=entry.get("email", ""),
+                        role=role,
                         confidence=min(0.95, score),
                         source="directory",
-                        department=entry.get("department", ""),
-                        institution=entry.get("institution", ""),
-                        context_notes=f"Matched institutional directory for {entry['institution']}",
+                        department=dept,
+                        institution=inst,
+                        context_notes=f"Matched institutional directory for {inst}" if inst else "Matched institutional directory",
                     )
                 )
         return results

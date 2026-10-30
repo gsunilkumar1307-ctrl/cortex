@@ -52,6 +52,10 @@ class MailTool(BaseTool):
         recipient = inputs.get("recipient_email") or inputs.get("recipient", "")
         subject = inputs.get("subject", "")
         body = inputs.get("formatted_body") or inputs.get("body", "")
+        account = inputs.get("account") or inputs.get("sender_account", "")
+        attachments = inputs.get("attachments")
+        cc = inputs.get("cc")
+        bcc = inputs.get("bcc")
 
         if not self.mail:
             return ExecutionResult(
@@ -62,8 +66,18 @@ class MailTool(BaseTool):
                 duration_ms=(time.time() - start_time) * 1000,
             )
 
+        def _call_adapter(func: Any, **kw: Any) -> dict[str, Any]:
+            import inspect
+            try:
+                sig = inspect.signature(func)
+                has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                call_kw = {k: v for k, v in kw.items() if has_varkw or k in sig.parameters}
+                return func(recipient, subject, body, **call_kw)
+            except (ValueError, TypeError):
+                return func(recipient, subject, body)
+
         if action == "draft_mail":
-            res = self.mail.draft_mail(recipient, subject, body)
+            res = _call_adapter(self.mail.draft_mail, account=account, attachments=attachments, cc=cc, bcc=bcc)
             duration_ms = (time.time() - start_time) * 1000
             return ExecutionResult(
                 step_id=inputs.get("step_id", "draft-step"),
@@ -76,7 +90,7 @@ class MailTool(BaseTool):
 
         elif action == "send_mail":
             try:
-                res = self.mail.send_mail(recipient, subject, body)
+                res = _call_adapter(self.mail.send_mail, account=account, attachments=attachments, cc=cc, bcc=bcc)
             except Exception as e:
                 duration_ms = (time.time() - start_time) * 1000
                 return ExecutionResult(

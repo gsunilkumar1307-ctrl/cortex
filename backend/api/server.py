@@ -36,21 +36,57 @@ try:
     from backend.agent.orchestrator import CortexOrchestrator
     from backend.api.voice_ui import VOICE_UI
     from backend.voice.transcription import VoiceTranscriber, is_audio_silent
+    from backend.core.contracts import TaskStatus
 except ImportError:
     from orchestrator import CortexOrchestrator
     from voice_ui import VOICE_UI
     from transcription import VoiceTranscriber, is_audio_silent
+    from contracts import TaskStatus
+
+try:
+    from backend.core.auth import verify_session_token, require_session_auth
+except ImportError:
+    from auth import verify_session_token, require_session_auth
 
 app = FastAPI(title="Cortex Cloud Brain", version="0.2.0")
 
-# Setup CORS
+# Setup Restricted CORS (Only trusted local Electron / Vite origins)
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "cortex://desktop",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def session_auth_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path
+    if path not in {"/", "/health", "/ping", "/docs", "/openapi.json", "/redoc"}:
+        if os.getenv("CORTEX_DISABLE_AUTH", "0") != "1":
+            token = request.headers.get("X-Cortex-Session")
+            if not token:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized: Missing X-Cortex-Session token"},
+                )
+            if not verify_session_token(token):
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized: Invalid X-Cortex-Session token"},
+                )
+    return await call_next(request)
 
 orchestrator = CortexOrchestrator()
 voice_transcriber = VoiceTranscriber()
@@ -58,9 +94,12 @@ voice_transcriber = VoiceTranscriber()
 class ChatRequest(BaseModel):
     message: str
     source: str = "text"
+    preferred_language: Optional[str] = None
+
 
 class ApproveRequest(BaseModel):
     approved: bool
+    approval_hash: Optional[str] = None
 
 class MemoryCreateRequest(BaseModel):
     id: str
@@ -104,6 +143,15 @@ async def post_session_clear():
     orchestrator.clear_history()
     return {"ok": True, "message": "Conversation history cleared"}
 
+@app.get("/tasks")
+async def get_all_tasks(limit: int = 100):
+    """Return recent tasks with their audit trails for the activity-log UI."""
+    try:
+        tasks = orchestrator.task_store.list_all_tasks(limit=limit)
+        return {"tasks": [t.to_dict() for t in tasks]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/tasks/{task_id}/events")
 async def get_task_events(task_id: str):
     try:
@@ -141,7 +189,7 @@ async def post_chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="message is required")
     try:
         cleaned = strip_wake_word(message)
-        return orchestrator.chat(cleaned, req.source)
+        return orchestrator.chat(cleaned, req.source, preferred_language=req.preferred_language)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -272,7 +320,25 @@ def get_tts(text: str, lang: str = "en", rate: float = 1.0):
 @app.post("/tasks/{task_id}/approve")
 async def post_approve(task_id: str, req: ApproveRequest):
     try:
-        return orchestrator.approve(task_id, req.approved)
+        task = orchestrator.tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found.")
+        if task.status != TaskStatus.WAITING_APPROVAL:
+            raise HTTPException(status_code=400, detail="Cannot approve: task is not waiting for approval or has already been executed.")
+        if req.approved and task.params.get("approval_hash"):
+            if not req.approval_hash:
+                raise HTTPException(status_code=400, detail="Missing approval hash: an explicit approval hash token is required.")
+            if req.approval_hash != task.params.get("approval_hash"):
+                raise HTTPException(status_code=400, detail="Approval hash mismatch.")
+
+        res = orchestrator.approve(task_id, req.approved, approval_hash=req.approval_hash)
+        if isinstance(res, dict) and res.get("error"):
+            err_msg = str(res["error"]).lower()
+            if any(k in err_msg for k in ("mismatch", "invalidated", "replay", "canceled", "cancelled", "cannot approve", "already", "approval", "not waiting")):
+                raise HTTPException(status_code=400, detail=res["error"])
+        return res
+    except HTTPException:
+        raise
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -293,6 +359,8 @@ class EditDraftRequest(BaseModel):
     body: Optional[str] = None
     sender_account: Optional[str] = None
     attachments: Optional[List[str]] = None
+    cc: Optional[List[str]] = None
+    bcc: Optional[List[str]] = None
 
 class OAuthCallbackRequest(BaseModel):
     code: str
@@ -308,6 +376,8 @@ async def post_edit_draft(task_id: str, req: EditDraftRequest):
             body=req.body,
             sender_account=req.sender_account,
             attachments=req.attachments,
+            cc=req.cc,
+            bcc=req.bcc,
         )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -318,17 +388,24 @@ async def post_edit_draft(task_id: str, req: EditDraftRequest):
 async def get_email_accounts():
     """List connected email accounts across Apple Mail and Gmail."""
     try:
-        from providers.manager import MailProviderManager
+        try:
+            from backend.integrations.email.manager import MailProviderManager
+        except ImportError:
+            from providers.manager import MailProviderManager
         mgr = MailProviderManager(dry_run=False)
-        return {"accounts": mgr.list_accounts()}
+        accounts = mgr.list_accounts()
+        return {"ok": True, "accounts": accounts}
     except Exception as e:
-        return {"accounts": [], "error": str(e)}
+        return {"ok": False, "accounts": [], "error": str(e), "detail": "Email provider discovery failed"}
 
 @app.get("/email/auth/url")
 async def get_gmail_auth_url(redirect_uri: str = "http://127.0.0.1:8765/email/auth/callback"):
     """Get Google OAuth2 authorization URL for Gmail consent."""
     try:
-        from providers.gmail_provider import GmailProvider
+        try:
+            from backend.integrations.email.gmail_provider import GmailProvider
+        except ImportError:
+            from providers.gmail_provider import GmailProvider
         gmail = GmailProvider()
         url = gmail.get_authorization_url(redirect_uri=redirect_uri)
         return {"url": url, "redirect_uri": redirect_uri}
@@ -339,7 +416,10 @@ async def get_gmail_auth_url(redirect_uri: str = "http://127.0.0.1:8765/email/au
 async def post_gmail_auth_callback(req: OAuthCallbackRequest):
     """Exchange authorization code for Gmail tokens."""
     try:
-        from providers.gmail_provider import GmailProvider
+        try:
+            from backend.integrations.email.gmail_provider import GmailProvider
+        except ImportError:
+            from providers.gmail_provider import GmailProvider
         gmail = GmailProvider()
         res = gmail.exchange_code(req.code, req.redirect_uri)
         return res
@@ -350,7 +430,10 @@ async def post_gmail_auth_callback(req: OAuthCallbackRequest):
 async def post_email_disconnect(provider_name: str = "gmail"):
     """Disconnect and revoke provider credentials."""
     try:
-        from providers.manager import MailProviderManager
+        try:
+            from backend.integrations.email.manager import MailProviderManager
+        except ImportError:
+            from providers.manager import MailProviderManager
         mgr = MailProviderManager(dry_run=False)
         prov = mgr.providers.get(provider_name.lower())
         if prov:

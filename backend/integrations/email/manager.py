@@ -81,9 +81,11 @@ class MailProviderManager:
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         provider = self.get_provider_for_account(account)
-        return provider.create_draft(recipient, subject, body, account, attachments)
+        return provider.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
 
     def send_message(
         self,
@@ -92,9 +94,11 @@ class MailProviderManager:
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         provider = self.get_provider_for_account(account)
-        return provider.send_message(recipient, subject, body, account, attachments)
+        return provider.send_message(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
 
     def verify_draft_exists(self, recipient: str, subject: str, account: str = "") -> dict[str, Any]:
         provider = self.get_provider_for_account(account)

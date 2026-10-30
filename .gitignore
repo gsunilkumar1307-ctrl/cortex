@@ -15,3 +15,8 @@ work/
 screenshots/
 logs/
 *.log
+*.key
+.memory_key
+.session_secret
+backend/native/cortex_screen_helper
+!backend/native/cortex_screen_helper.swift

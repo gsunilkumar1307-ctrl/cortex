@@ -46,6 +46,8 @@ class BaseEmailProvider(ABC):
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a real draft in the provider's Drafts folder.
         Returns: {'ok': bool, 'message': str, 'draft_id': str | None, 'data': dict}
@@ -60,6 +62,8 @@ class BaseEmailProvider(ABC):
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         """Send an approved message through the provider.
         Returns: {'ok': bool, 'message': str, 'message_id': str | None, 'data': dict}

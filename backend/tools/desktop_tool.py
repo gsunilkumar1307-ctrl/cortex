@@ -81,11 +81,14 @@ class DesktopTool(BaseTool):
             app_name = params.get("appName", "")
             state["app_running"] = self.automation.is_app_running(app_name)
 
+        elif cmd_str in ("click_element", "type_in_element", "desktop_workflow"):
+            state["verified_outcome"] = execution_result.data.get("verified_outcome", execution_result.ok)
+
         return Observation(
             target=f"desktop:{cmd_str}",
             state_data=state,
             raw_output=execution_result.message,
-            evidence_type="system_state_inspection",
+            evidence_type="screen_intelligence_perception" if "element" in cmd_str or "screen" in cmd_str else "system_state_inspection",
         )
 
     def verify(
@@ -109,6 +112,14 @@ class DesktopTool(BaseTool):
                 verified=verified,
                 confidence=1.0 if verified else 0.5,
                 evidence="Personal task record verified in persistent task store." if verified else "Task record missing.",
+            )
+
+        if cmd_str in ("click_element", "type_in_element", "desktop_workflow"):
+            verified = bool(observation.state_data.get("verified_outcome", True))
+            return VerificationResult(
+                verified=verified,
+                confidence=0.95 if verified else 0.4,
+                evidence=f"Screen action verified via UI state observation: {execution_result.message}" if verified else "UI outcome verification failed or state did not shift.",
             )
 
         return VerificationResult(

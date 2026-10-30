@@ -2,13 +2,33 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
+import time
 from typing import Any
 from .base_provider import BaseEmailProvider
 
 
-def _apple_string(val: str) -> str:
-    return '"' + str(val).replace("\\", "\\\\").replace('"', '\\"') + '"'
+def extract_clean_email(raw: str) -> str:
+    if not raw:
+        return ""
+    match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", raw)
+    if match:
+        return match.group(0).lower().strip()
+    return raw.lower().strip()
+
+
+def _apple_string(val: Any) -> str:
+    if val is None:
+        return '""'
+    s = str(val)
+    # Strip null bytes to prevent POSIX subprocess ValueError
+    s = s.replace("\x00", "")
+    # Normalize line endings
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    # Escape backslashes first, then quotes
+    s = s.replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + s + '"'
 
 
 class AppleMailProvider(BaseEmailProvider):
@@ -193,21 +213,38 @@ class AppleMailProvider(BaseEmailProvider):
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         if not recipient:
-            return {"ok": False, "message": "Recipient address is required."}
+            return {"ok": False, "provider": "apple_mail", "status": "error", "error": "Recipient required", "message": "Recipient address is required.", "draft_id": None}
         subject = subject or "No Subject"
         body = body or ""
+
+        if attachments:
+            for att_path in attachments:
+                if att_path and not os.path.exists(att_path):
+                    return {
+                        "ok": False,
+                        "provider": "apple_mail",
+                        "status": "error",
+                        "error": f"Attachment file not found: {att_path}",
+                        "message": f"Attachment file not found: {att_path}",
+                        "draft_id": None,
+                    }
+
         record = {
             "recipient": recipient,
             "subject": subject,
             "body": body,
             "account": account,
             "attachments": attachments or [],
+            "cc": cc or [],
+            "bcc": bcc or [],
         }
-        self._draft_records.append(record)
 
         if self.dry_run or self.system != "darwin":
+            self._draft_records.append(record)
             return {
                 "ok": True,
                 "provider": "apple_mail",
@@ -217,18 +254,37 @@ class AppleMailProvider(BaseEmailProvider):
                 "data": record,
             }
 
-        script = f"""
-        tell application "Mail"
-            activate
-            set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:true}}
-            tell newMsg
-                make new to recipient at end of to recipients with properties {{address:{_apple_string(recipient)}}}
-            end tell
-            save newMsg
-        end tell
-        """
+        script_parts = [
+            'tell application "Mail"',
+            '    activate',
+            f'    set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:true}}',
+            '    tell newMsg',
+        ]
+        to_recipients = [r.strip() for r in re.split(r"[,;]|\band\b", recipient) if r.strip()]
+        for to_rec in (to_recipients or [recipient]):
+            script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
+        if account:
+            script_parts.append(f'        set sender of newMsg to {_apple_string(account)}')
+        for c in (cc or []):
+            if c:
+                script_parts.append(f'        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(c)}}}')
+        for b in (bcc or []):
+            if b:
+                script_parts.append(f'        make new bcc recipient at end of bcc recipients with properties {{address:{_apple_string(b)}}}')
+        for a in (attachments or []):
+            if a:
+                abs_a = os.path.abspath(a)
+                script_parts.append(f'        make new attachment with properties {{file name:(POSIX file {_apple_string(abs_a)})}} at after the last paragraph of content')
+        script_parts.extend([
+            '    end tell',
+            '    save newMsg',
+            'end tell'
+        ])
+        script = "\n".join(script_parts)
+
         try:
-            subprocess.run(["osascript", "-e", script], check=True, timeout=8)
+            subprocess.run(["osascript", "-e", script], check=True, timeout=8, capture_output=True, text=True)
+            self._draft_records.append(record)
             return {
                 "ok": True,
                 "provider": "apple_mail",
@@ -238,7 +294,17 @@ class AppleMailProvider(BaseEmailProvider):
                 "data": record,
             }
         except Exception as e:
-            return {"ok": False, "provider": "apple_mail", "status": "error", "error": str(e), "message": f"Failed to create draft in Apple Mail: {e}", "draft_id": None}
+            err_str = getattr(e, "stderr", "") or str(e)
+            if "-1743" in err_str or "Not authorized to send Apple events" in err_str:
+                return {
+                    "ok": False,
+                    "provider": "apple_mail",
+                    "status": "permission_denied",
+                    "error": "macOS Automation Permission Denied",
+                    "message": "macOS Automation Permission Denied: Cortex requires permission to control Apple Mail. Please enable it in System Settings > Privacy & Security > Automation > Cortex.",
+                    "draft_id": None,
+                }
+            return {"ok": False, "provider": "apple_mail", "status": "error", "error": err_str, "message": f"Failed to create draft in Apple Mail: {err_str}", "draft_id": None}
 
     def send_message(
         self,
@@ -247,21 +313,39 @@ class AppleMailProvider(BaseEmailProvider):
         body: str,
         account: str = "",
         attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> dict[str, Any]:
         if not recipient:
-            return {"ok": False, "provider": "apple_mail", "status": "error", "error": "Recipient required", "message": "Recipient address is required."}
+            return {"ok": False, "provider": "apple_mail", "status": "error", "error": "Recipient required", "message": "Recipient address is required.", "message_id": None}
         subject = subject or "No Subject"
         body = body or ""
+
+        if attachments:
+            for att_path in attachments:
+                if att_path and not os.path.exists(att_path):
+                    return {
+                        "ok": False,
+                        "provider": "apple_mail",
+                        "status": "error",
+                        "error": f"Attachment file not found: {att_path}",
+                        "message": f"Attachment file not found: {att_path}",
+                        "message_id": None,
+                    }
+
         record = {
             "recipient": recipient,
             "subject": subject,
             "body": body,
             "account": account,
             "attachments": attachments or [],
+            "cc": cc or [],
+            "bcc": bcc or [],
+            "timestamp": time.time(),
         }
-        self._sent_records.append(record)
 
         if self.dry_run or self.system != "darwin":
+            self._sent_records.append(record)
             return {
                 "ok": True,
                 "provider": "apple_mail",
@@ -271,17 +355,36 @@ class AppleMailProvider(BaseEmailProvider):
                 "data": record,
             }
 
-        script = f"""
-        tell application "Mail"
-            set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:false}}
-            tell newMsg
-                make new to recipient at end of to recipients with properties {{address:{_apple_string(recipient)}}}
-                send
-            end tell
-        end tell
-        """
+        script_parts = [
+            'tell application "Mail"',
+            f'    set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:false}}',
+            '    tell newMsg',
+        ]
+        to_recipients = [r.strip() for r in re.split(r"[,;]|\band\b", recipient) if r.strip()]
+        for to_rec in (to_recipients or [recipient]):
+            script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
+        if account:
+            script_parts.append(f'        set sender of newMsg to {_apple_string(account)}')
+        for c in (cc or []):
+            if c:
+                script_parts.append(f'        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(c)}}}')
+        for b in (bcc or []):
+            if b:
+                script_parts.append(f'        make new bcc recipient at end of bcc recipients with properties {{address:{_apple_string(b)}}}')
+        for a in (attachments or []):
+            if a:
+                abs_a = os.path.abspath(a)
+                script_parts.append(f'        make new attachment with properties {{file name:(POSIX file {_apple_string(abs_a)})}} at after the last paragraph of content')
+        script_parts.extend([
+            '        send',
+            '    end tell',
+            'end tell'
+        ])
+        script = "\n".join(script_parts)
+
         try:
-            subprocess.run(["osascript", "-e", script], check=True, timeout=10)
+            subprocess.run(["osascript", "-e", script], check=True, timeout=10, capture_output=True, text=True)
+            self._sent_records.append(record)
             return {
                 "ok": True,
                 "provider": "apple_mail",
@@ -291,7 +394,17 @@ class AppleMailProvider(BaseEmailProvider):
                 "data": record,
             }
         except Exception as e:
-            return {"ok": False, "provider": "apple_mail", "status": "error", "error": str(e), "message": f"Failed to send email via Apple Mail: {e}", "message_id": None}
+            err_str = getattr(e, "stderr", "") or str(e)
+            if "-1743" in err_str or "Not authorized to send Apple events" in err_str:
+                return {
+                    "ok": False,
+                    "provider": "apple_mail",
+                    "status": "permission_denied",
+                    "error": "macOS Automation Permission Denied",
+                    "message": "macOS Automation Permission Denied: Cortex requires permission to control Apple Mail. Please enable it in System Settings > Privacy & Security > Automation > Cortex.",
+                    "message_id": None,
+                }
+            return {"ok": False, "provider": "apple_mail", "status": "error", "error": err_str, "message": f"Failed to send email via Apple Mail: {err_str}", "message_id": None}
 
     def verify_draft_exists(self, recipient: str, subject: str) -> dict[str, Any]:
         target = recipient.lower().strip()
@@ -322,37 +435,76 @@ class AppleMailProvider(BaseEmailProvider):
 
         return {"verified": bool(self._draft_records), "evidence": f"Draft recorded in session for {recipient}"}
 
-    def verify_message_sent(self, recipient: str, subject: str) -> dict[str, Any]:
-        target = recipient.lower().strip()
-        for s in reversed(self._sent_records):
-            rec = s.get("recipient", "").lower().strip()
-            if (rec == target or target in rec or rec in target) and (not subject or s.get("subject", "") == subject):
-                return {
-                    "verified": True,
-                    "evidence": f"Verified delivery to {recipient} with subject '{subject}' in Apple Mail sent register",
-                }
+    def verify_message_sent(self, recipient: str, subject: str, since_timestamp: float | None = None) -> dict[str, Any]:
+        target_email = extract_clean_email(recipient)
+        norm_subj = (subject or "").strip()
 
+        # 1. Inspect in-memory session records
+        matching_records = []
+        for s in self._sent_records:
+            rec_email = extract_clean_email(s.get("recipient", ""))
+            s_subj = (s.get("subject") or "").strip()
+            # Exact recipient email match and subject equality
+            if rec_email == target_email and (not norm_subj or s_subj == norm_subj):
+                ts = s.get("timestamp")
+                if since_timestamp and ts and ts < (since_timestamp - 300.0):
+                    continue
+                matching_records.append(s)
+
+        if len(matching_records) == 1:
+            return {
+                "verified": True,
+                "evidence": f"Verified submission to {recipient} with subject '{subject}' in Apple Mail sent register",
+            }
+        elif len(matching_records) > 1:
+            return {
+                "verified": False,
+                "uncertain": True,
+                "evidence": f"Inconclusive: multiple ({len(matching_records)}) matching sent records found for {recipient} with subject '{subject}'",
+            }
+
+        # 2. Inspect native Apple Mail Sent mailbox if on macOS
         if self.system == "darwin" and not self.dry_run:
             check_script = f"""
             tell application "Mail"
+                set matchCount to 0
                 try
                     repeat with m in (messages of sent mailbox)
-                        if (subject of m) contains {_apple_string(subject)} then
-                            return "FOUND"
+                        set mSubj to (subject of m)
+                        if mSubj is equal to {_apple_string(norm_subj)} or mSubj contains {_apple_string(norm_subj)} then
+                            set rList to (address of every recipient of m)
+                            set isMatch to false
+                            repeat with rAddr in rList
+                                if rAddr contains {_apple_string(target_email)} then
+                                    set isMatch to true
+                                    exit repeat
+                                end if
+                            end repeat
+                            if isMatch then
+                                set matchCount to matchCount + 1
+                            end if
                         end if
                     end repeat
                 end try
-                return "NOT_FOUND"
+                if matchCount = 1 then
+                    return "VERIFIED"
+                else if matchCount > 1 then
+                    return "AMBIGUOUS"
+                else
+                    return "NOT_FOUND"
+                end if
             end tell
             """
             try:
                 out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5).stdout.strip()
-                if out == "FOUND":
-                    return {"verified": True, "evidence": f"Confirmed message exists in Apple Mail 'Sent' mailbox for {recipient}"}
+                if out == "VERIFIED":
+                    return {"verified": True, "evidence": f"Confirmed single matching message in Apple Mail 'Sent' mailbox for {recipient}"}
+                elif out == "AMBIGUOUS":
+                    return {"verified": False, "uncertain": True, "evidence": f"Inconclusive: multiple messages match subject and recipient for {recipient}"}
             except Exception:
                 pass
 
-        return {"verified": False, "evidence": f"No record of sent message found in sent mailbox for {recipient}"}
+        return {"verified": False, "evidence": f"No definitive record of sent message found in sent mailbox for {recipient}"}
 
     def delete_draft(self, recipient: str, subject: str = "") -> dict[str, Any]:
         target = recipient.lower().strip()

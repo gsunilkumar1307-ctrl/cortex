@@ -12,7 +12,25 @@ from cryptography.fernet import Fernet
 class EncryptedMemoryStore:
     def __init__(self, db_path: str = "cortex-memory.sqlite3", key: bytes | None = None) -> None:
         self.db_path = Path(db_path)
-        self.key = key or os.getenv("CORTEX_MEMORY_KEY", "").encode() or Fernet.generate_key()
+        if not key:
+            env_key = os.getenv("CORTEX_MEMORY_KEY") or os.getenv("CORTEX_ENCRYPTION_KEY")
+            if env_key:
+                key = env_key.strip().encode()
+            else:
+                key_file = self.db_path.parent / ".memory_key"
+                if key_file.exists():
+                    try:
+                        key = key_file.read_bytes().strip()
+                    except Exception:
+                        pass
+                if not key:
+                    key = Fernet.generate_key()
+                    try:
+                        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                        key_file.write_bytes(key)
+                    except Exception:
+                        pass
+        self.key = key
         self.fernet = Fernet(self.key)
         self._init_db()
 
@@ -31,17 +49,30 @@ class EncryptedMemoryStore:
             )
 
     def put(self, memory_id: str, kind: str, payload: dict[str, Any]) -> None:
-        raw = json.dumps(payload, sort_keys=True).encode()
+        raw = json.dumps(payload, sort_keys=True, default=str).encode()
         ciphertext = self.fernet.encrypt(raw)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO memories (id, kind, ciphertext) VALUES (?, ?, ?)",
-                (memory_id, kind, ciphertext),
-            )
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO memories (id, kind, ciphertext) VALUES (?, ?, ?)",
+                    (memory_id, kind, ciphertext),
+                )
+        except sqlite3.OperationalError:
+            self._init_db()
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO memories (id, kind, ciphertext) VALUES (?, ?, ?)",
+                    (memory_id, kind, ciphertext),
+                )
 
     def get(self, memory_id: str) -> dict[str, Any] | None:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT ciphertext FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute("SELECT ciphertext FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        except sqlite3.OperationalError:
+            self._init_db()
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute("SELECT ciphertext FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if not row:
             return None
         try:
@@ -51,32 +82,44 @@ class EncryptedMemoryStore:
 
     def update(self, memory_id: str, payload: dict[str, Any]) -> bool:
         """Update payload of an existing memory."""
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT kind FROM memories WHERE id = ?", (memory_id,)).fetchone()
-            if not row:
-                return False
-            raw = json.dumps(payload, sort_keys=True).encode()
-            ciphertext = self.fernet.encrypt(raw)
-            conn.execute(
-                "UPDATE memories SET ciphertext = ? WHERE id = ?",
-                (ciphertext, memory_id),
-            )
-            return True
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute("SELECT kind FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                if not row:
+                    return False
+                raw = json.dumps(payload, sort_keys=True).encode()
+                ciphertext = self.fernet.encrypt(raw)
+                conn.execute(
+                    "UPDATE memories SET ciphertext = ? WHERE id = ?",
+                    (ciphertext, memory_id),
+                )
+                return True
+        except sqlite3.OperationalError:
+            self._init_db()
+            return False
 
     def delete(self, memory_id: str) -> bool:
         """Delete an individual memory by id."""
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-            return cur.rowcount > 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+                return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            self._init_db()
+            return False
 
     def clear(self, kind: str | None = None) -> int:
         """Clear memories, optionally filtered by kind."""
-        with sqlite3.connect(self.db_path) as conn:
-            if kind:
-                cur = conn.execute("DELETE FROM memories WHERE kind = ?", (kind,))
-            else:
-                cur = conn.execute("DELETE FROM memories")
-            return cur.rowcount
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if kind:
+                    cur = conn.execute("DELETE FROM memories WHERE kind = ?", (kind,))
+                else:
+                    cur = conn.execute("DELETE FROM memories")
+                return cur.rowcount
+        except sqlite3.OperationalError:
+            self._init_db()
+            return 0
 
     def list(self, kind: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT id, kind, ciphertext, created_at FROM memories"
@@ -85,8 +128,13 @@ class EncryptedMemoryStore:
             query += " WHERE kind = ?"
             params = (kind,)
         query += " ORDER BY created_at DESC"
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(query, params).fetchall()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(query, params).fetchall()
+        except sqlite3.OperationalError:
+            self._init_db()
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(query, params).fetchall()
         items = []
         for row in rows:
             try:

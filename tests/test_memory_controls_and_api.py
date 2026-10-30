@@ -7,6 +7,7 @@ from backend.persistence.encrypted_store import EncryptedMemoryStore
 from backend.agent.orchestrator import CortexOrchestrator
 from backend.capabilities import DeviceAutomation
 from backend.api.server import app, orchestrator
+from backend.core.auth import get_or_create_session_secret
 
 
 class TestMemoryControlsAndAPI(unittest.TestCase):
@@ -15,7 +16,7 @@ class TestMemoryControlsAndAPI(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.db_path = str(Path(self.tmp.name) / "test-memory.sqlite3")
         self.store = EncryptedMemoryStore(self.db_path)
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers={"X-Cortex-Session": get_or_create_session_secret()})
 
     def test_store_put_get_update_delete(self):
         # 1. Put
