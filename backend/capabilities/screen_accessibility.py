@@ -18,6 +18,7 @@ logger = logging.getLogger("cortex.screen_accessibility")
 
 
 class NormalizedUIRole(str, Enum):
+    APPLICATION = "application"
     WINDOW = "window"
     SHEET = "sheet"
     DIALOG = "dialog"
@@ -36,6 +37,7 @@ class NormalizedUIRole(str, Enum):
     @classmethod
     def from_ax_role(cls, ax_role: str, subrole: Optional[str] = None) -> "NormalizedUIRole":
         role_map = {
+            "AXApplication": cls.APPLICATION,
             "AXWindow": cls.WINDOW,
             "AXSheet": cls.SHEET,
             "AXDialog": cls.DIALOG,
@@ -175,13 +177,42 @@ class AccessibilityInspectionEngine:
 
         # Retrieve window metadata
         windows = [w for w in self.bridge.list_windows() if w.pid == app.pid]
-        front_window = windows[0] if windows else None
+        # Prefer on-screen windows with non-empty titles over empty auxiliary toolbars
+        named_windows = [w for w in windows if w.title and w.title.strip()]
+        front_window = named_windows[0] if named_windows else (windows[0] if windows else None)
 
         raw_elements = self.bridge.inspect_ax_tree(
             pid=app.pid,
             depth=max_depth,
             max_elements=max_elements,
         )
+
+        # If window title is missing from window list, check AXWindow element in accessibility tree
+        ax_win_title = next(
+            (el.title.strip() for el in (raw_elements or []) if "window" in el.role.lower() and el.title and el.title.strip()),
+            None
+        )
+        if ax_win_title:
+            if front_window and (not front_window.title or not front_window.title.strip()):
+                from .screen_native import WindowInfo
+                front_window = WindowInfo(
+                    window_id=front_window.window_id,
+                    pid=front_window.pid,
+                    app_name=front_window.app_name,
+                    bounds=front_window.bounds,
+                    title=ax_win_title,
+                    is_on_screen=front_window.is_on_screen,
+                )
+            elif not front_window:
+                from .screen_native import WindowInfo, RectBounds
+                front_window = WindowInfo(
+                    window_id=0,
+                    pid=app.pid,
+                    app_name=app.name,
+                    bounds=RectBounds(x=0.0, y=0.0, width=0.0, height=0.0),
+                    title=ax_win_title,
+                    is_on_screen=True,
+                )
 
         if not raw_elements:
             return AccessibilityPerceptionResult(

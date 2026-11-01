@@ -679,17 +679,177 @@ class DeviceAutomation:
         return DeviceActionResult(True, msg, data)
 
     def _observe_screen(self, capture: bool = False, run_ocr: bool = False, pid: int | None = None, params: dict[str, Any] | None = None) -> DeviceActionResult:
+        params = params or {}
+        max_elements = int(params.get("max_elements", 5))
+
+        # 1. Verify permissions
+        perms = self.screen_bridge.get_permissions()
+
+        # 2. Check frontmost application
+        app = None
+        if pid:
+            for running in self.screen_bridge.list_running_apps():
+                if running.pid == pid:
+                    app = running
+                    break
+        else:
+            app = self.screen_bridge.get_frontmost_app()
+
+        app_name = app.name if app and app.name else "Unavailable"
+        limitations_list: list[str] = []
+
+        # Permission check: Accessibility
+        if not perms.accessibility:
+            if "failed" in perms.status_message.lower():
+                limitations_list.append(perms.status_message)
+            else:
+                limitations_list.append("Accessibility permission denied. Please grant Accessibility access in System Settings > Privacy & Security > Accessibility.")
+            formatted_msg = (
+                f"- **Active application:** {app_name}\n"
+                f"- **Active window:** Unavailable\n"
+                f"- **Visible elements:** None\n"
+                f"- **Limitations:** {'; '.join(limitations_list)}"
+            )
+            return DeviceActionResult(
+                False,
+                formatted_msg,
+                {
+                    "app": app.to_dict() if app else None,
+                    "window": None,
+                    "window_title": "Unavailable",
+                    "visible_elements": [],
+                    "elements": [],
+                    "limitations": "; ".join(limitations_list),
+                    "permissions": perms.to_dict(),
+                    "observed_facts": [],
+                    "model_inferences": [],
+                }
+            )
+
+        # 3. Accessibility inspection
         ax = self.ax_engine.inspect_current_application(pid=pid)
         if not ax.ok:
-            return DeviceActionResult(False, f"Screen observation failed: {ax.error}")
+            err_msg = ax.error or "Failed to inspect accessibility tree."
+            limitations_list.append(err_msg)
+            formatted_msg = (
+                f"- **Active application:** {app_name}\n"
+                f"- **Active window:** Unavailable\n"
+                f"- **Visible elements:** None\n"
+                f"- **Limitations:** {'; '.join(limitations_list)}"
+            )
+            return DeviceActionResult(
+                False,
+                formatted_msg,
+                {
+                    "app": app.to_dict() if app else None,
+                    "window": None,
+                    "window_title": "Unavailable",
+                    "visible_elements": [],
+                    "elements": [],
+                    "limitations": "; ".join(limitations_list),
+                    "permissions": perms.to_dict(),
+                    "observed_facts": [],
+                    "model_inferences": [],
+                }
+            )
 
+        if ax.app and ax.app.name:
+            app_name = ax.app.name
+
+        # 4. Active window resolution (Never infer window title from application name)
+        window = ax.window
+        window_title = "Unavailable"
+        if window and window.title and window.title.strip():
+            window_title = window.title.strip()
+        else:
+            limitations_list.append("No active window title found.")
+
+        # 5. Extract visible elements from accessibility hierarchy
+        visible_elements: list[str] = []
+        element_dicts: list[dict[str, Any]] = []
+        seen_labels: set[str] = set()
+
+        for el in ax.elements:
+            label = (el.title or el.description or el.value or "").strip()
+            if not label or label in seen_labels:
+                continue
+            if label.startswith(el.role.value + "_"):
+                continue
+            # Redact/skip sensitive content
+            if any(s in label.lower() for s in ("password", "secret", "token", "private_key", "bearer")):
+                continue
+            seen_labels.add(label)
+            role_name = el.role.value.replace("_", " ").capitalize()
+            visible_elements.append(f"[{role_name}] {label}")
+            element_dicts.append({
+                "role": el.role.value,
+                "label": label,
+                "source": "accessibility",
+                "is_interactive": el.is_interactive,
+            })
+            if len(visible_elements) >= max_elements:
+                break
+
+        # 6. Screen capture and OCR when requested or when elements < max_elements
         screenshot_path = None
-        if capture:
-            self.screenshot_dir.mkdir(parents=True, exist_ok=True)
-            screenshot_path = str(self.screenshot_dir / f"screen_{int(time.time())}.png")
-            self.screen_bridge.capture_screenshot(screenshot_path)
+        should_run_ocr = run_ocr or (len(visible_elements) < max_elements) or capture
+        if should_run_ocr:
+            if not perms.screen_recording:
+                limitations_list.append("Screen recording permission denied (Apple Vision OCR unavailable).")
+            else:
+                self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+                screenshot_path = str((self.screenshot_dir / f"screen_{int(time.time())}.png").resolve())
+                cap_ok, cap_msg = self.screen_bridge.capture_screenshot(screenshot_path)
+                if not cap_ok:
+                    limitations_list.append(f"Screenshot capture failed: {cap_msg}")
+                else:
+                    ocr_obs = self.screen_bridge.run_ocr(screenshot_path)
+                    if not ocr_obs and run_ocr:
+                        limitations_list.append("Apple Vision OCR returned no text.")
+                    elif ocr_obs and len(visible_elements) < max_elements:
+                        for o in ocr_obs:
+                            t = o.text.strip()
+                            if not t or t in seen_labels:
+                                continue
+                            if any(s in t.lower() for s in ("password", "secret", "token", "private_key")):
+                                continue
+                            seen_labels.add(t)
+                            # Ground strictly as Text, not as button/control
+                            visible_elements.append(f"[Text] {t}")
+                            element_dicts.append({
+                                "role": "text",
+                                "label": t,
+                                "source": "vision_ocr",
+                                "confidence": o.confidence,
+                            })
+                            if len(visible_elements) >= max_elements:
+                                break
 
+        # 7. Partial observation / empty limitations
+        if len(visible_elements) == 0:
+            limitations_list.append("No accessible UI elements or visible text found.")
+        elif len(visible_elements) < max_elements and "No active window title found." not in limitations_list:
+            limitations_list.append(f"Only {len(visible_elements)} visible elements could be identified.")
+
+        limitations_str = "; ".join(limitations_list) if limitations_list else "None"
+
+        # 8. Build ScreenContext for multi-source fusion & persistence
         ctx = self.fusion_engine.fuse(ax, screenshot_path=screenshot_path, task_context=params)
+        distinctions = ctx.distinguish_facts_and_inferences()
+
+        # 9. Format visible elements list for markdown
+        if visible_elements:
+            elem_lines = "\n".join(f"  {idx + 1}. {e}" for idx, e in enumerate(visible_elements))
+            elem_str = f"\n{elem_lines}"
+        else:
+            elem_str = " None"
+
+        formatted_msg = (
+            f"- **Active application:** {app_name}\n"
+            f"- **Active window:** {window_title}\n"
+            f"- **Visible elements:**{elem_str}\n"
+            f"- **Limitations:** {limitations_str}"
+        )
 
         task_id = params.get("task_id") if params else None
         if hasattr(self, "task_store") and self.task_store:
@@ -697,17 +857,30 @@ class DeviceAutomation:
                 self.task_store.record_screen_observation(
                     context_id=ctx.context_id,
                     task_id=task_id,
-                    app_name=ctx.app.name,
-                    window_title=ctx.window.title if ctx.window else None,
-                    elements_count=len(ctx.elements),
-                    modal_dialog=any(el.is_modal for el in ctx.elements),
-                    screenshot_path=ctx.screenshot_path,
+                    app_name=app_name,
+                    window_title=window_title if window_title != "Unavailable" else None,
+                    elements_count=len(visible_elements),
+                    modal_dialog=any(el.is_modal for el in ax.elements),
+                    screenshot_path=screenshot_path,
                     facts=[f.to_dict() for f in ctx.facts],
                 )
             except Exception:
                 pass
 
-        return DeviceActionResult(True, f"Observed {ctx.app.name} with {len(ctx.elements)} accessible elements.", ctx.to_summary_dict())
+        summary_data = {
+            "app": {"name": app_name, "pid": app.pid if app else 0},
+            "window": window.to_dict() if window else None,
+            "window_title": window_title,
+            "visible_elements": visible_elements,
+            "elements": element_dicts,
+            "limitations": limitations_str,
+            "permissions": perms.to_dict(),
+            "observed_facts": distinctions.get("observed_facts", []),
+            "model_inferences": distinctions.get("model_inferences", []),
+            "screenshot_path": screenshot_path,
+        }
+
+        return DeviceActionResult(True, formatted_msg, summary_data)
 
     def _resolve_ui_element(self, target: str, params: dict[str, Any] | None = None) -> DeviceActionResult:
         ax = self.ax_engine.inspect_current_application()

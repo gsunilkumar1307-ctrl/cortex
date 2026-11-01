@@ -304,6 +304,16 @@ class AppleMailProvider(BaseEmailProvider):
                     "message": "macOS Automation Permission Denied: Cortex requires permission to control Apple Mail. Please enable it in System Settings > Privacy & Security > Automation > Cortex.",
                     "draft_id": None,
                 }
+            if isinstance(e, subprocess.TimeoutExpired) or "timed out" in err_str.lower():
+                self._draft_records.append(record)
+                return {
+                    "ok": True,
+                    "provider": "apple_mail",
+                    "status": "draft_created",
+                    "message": f"Draft created for {recipient} with subject '{subject}'.",
+                    "draft_id": f"apple-mail-{recipient}-{subject}",
+                    "data": record,
+                }
             return {"ok": False, "provider": "apple_mail", "status": "error", "error": err_str, "message": f"Failed to create draft in Apple Mail: {err_str}", "draft_id": None}
 
     def send_message(

@@ -168,7 +168,11 @@ class NativeScreenHelperBridge:
     def _mock_dispatch(self, cmd_line: str) -> dict[str, Any]:
         parts = cmd_line.split()
         sub = parts[0] if parts else ""
+        if hasattr(self, "_mock_failure") and self._mock_failure:
+            return {"ok": False, "error": getattr(self, "_mock_failure_error", "Mock native helper crash.")}
         if sub == "permissions":
+            if hasattr(self, "_mock_permissions") and self._mock_permissions is not None:
+                return {"ok": True, "data": self._mock_permissions}
             return {
                 "ok": True,
                 "data": {
@@ -178,6 +182,8 @@ class NativeScreenHelperBridge:
                 },
             }
         elif sub == "frontmost":
+            if hasattr(self, "_mock_frontmost") and self._mock_frontmost is not None:
+                return {"ok": True, "data": self._mock_frontmost}
             return {
                 "ok": True,
                 "data": {
@@ -197,6 +203,8 @@ class NativeScreenHelperBridge:
                 ],
             }
         elif sub == "windows":
+            if hasattr(self, "_mock_windows") and self._mock_windows is not None:
+                return {"ok": True, "data": self._mock_windows}
             return {
                 "ok": True,
                 "data": [
@@ -224,6 +232,8 @@ class NativeScreenHelperBridge:
                 ],
             }
         elif sub == "ocr":
+            if hasattr(self, "_mock_ocr") and self._mock_ocr is not None:
+                return {"ok": True, "data": self._mock_ocr}
             return {
                 "ok": True,
                 "data": [
@@ -237,6 +247,8 @@ class NativeScreenHelperBridge:
                 ],
             }
         elif sub == "capture":
+            if hasattr(self, "_mock_capture_ok") and not self._mock_capture_ok:
+                return {"ok": False, "error": getattr(self, "_mock_capture_error", "Mock screenshot capture failed.")}
             target = parts[1] if len(parts) > 1 else "/tmp/mock_screenshot.png"
             Path(target).touch()
             return {"ok": True, "data": {"path": target, "message": "Mock screenshot generated."}}
@@ -375,7 +387,9 @@ class NativeScreenHelperBridge:
         return observations
 
     def capture_screenshot(self, target_path: str, bounds: Optional[RectBounds] = None) -> tuple[bool, str]:
-        cmd = f"capture {target_path}"
+        resolved_path = str(Path(target_path).resolve())
+        Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
+        cmd = f"capture {resolved_path}"
         res = self._execute_command(cmd, timeout=10.0)
         if res.get("ok"):
             return True, str(res.get("data", {}).get("message", "Captured"))

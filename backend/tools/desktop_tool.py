@@ -114,6 +114,13 @@ class DesktopTool(BaseTool):
                 evidence="Personal task record verified in persistent task store." if verified else "Task record missing.",
             )
 
+        if cmd_str == "observe_screen":
+            return VerificationResult(
+                verified=execution_result.ok,
+                confidence=1.0 if execution_result.ok else 0.2,
+                evidence=execution_result.message if execution_result.ok else f"Screen observation failed: {execution_result.error or execution_result.message}",
+            )
+
         if cmd_str in ("click_element", "type_in_element", "desktop_workflow"):
             verified = bool(observation.state_data.get("verified_outcome", True))
             return VerificationResult(

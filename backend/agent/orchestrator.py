@@ -2391,7 +2391,7 @@ class CortexOrchestrator:
         else:
             self._execute(task)
             if task.status in (TaskStatus.FAILED, "failed"):
-                response = task.error or localize("action_failed", raw_lang_code)
+                response = task.result or task.error or localize("action_failed", raw_lang_code)
             elif task.status in (TaskStatus.BLOCKED, "blocked"):
                 response = task.error or localize("action_blocked", raw_lang_code)
             elif task.status in (TaskStatus.NEED_INFO, "need_info"):
@@ -3575,6 +3575,12 @@ class CortexOrchestrator:
         lang = str(task.language.value if task.language else "en")
         if final_res.status == TaskStatus.COMPLETED:
             task.status = TaskStatus.COMPLETED
+            if task.command == TaskCommand.OBSERVE_SCREEN and final_res.data:
+                task.params = task.params or {}
+                for k, v in final_res.data.items():
+                    if k != "params":
+                        task.params[k] = v
+                task.params["observation"] = {k: v for k, v in final_res.data.items() if k != "params"}
             if lang != "en":
                 if task.command == TaskCommand.OPEN_APP:
                     task.result = localize("app_opened", lang, app_name=task.params.get("appName", "app"))
@@ -3612,6 +3618,15 @@ class CortexOrchestrator:
         else:
             task.status = TaskStatus.FAILED
             task.error = final_res.summary or task.error or "Execution failed."
+            if task.command == TaskCommand.OBSERVE_SCREEN:
+                if final_res.data:
+                    task.params = task.params or {}
+                    task.params["observation"] = {k: v for k, v in final_res.data.items() if k != "params"}
+                last_exec = task.execution_history[-1] if task.execution_history else None
+                if last_exec and last_exec.message and "- **Active application:**" in last_exec.message:
+                    task.result = last_exec.message
+                else:
+                    task.result = final_res.summary or task.error
 
     def _persist_task(self, task: Task) -> None:
         self.memory.put(task.id, "task", task.to_dict())
@@ -3688,6 +3703,7 @@ class CortexOrchestrator:
             return {
                 "capture_screenshot": bool("capture" in text or "screenshot" in text),
                 "run_ocr": bool("ocr" in text or "text" in text),
+                "max_elements": 5,
             }
         if command == TaskCommand.RESOLVE_UI_ELEMENT:
             m = re.search(r"(?:find|locate|where is)\s+(?:the\s+)?(.+?)(?:\s+button|\s+field|\s+element)?$", text, re.IGNORECASE)

@@ -977,7 +977,16 @@ def command_from_intent(intent: str) -> TaskCommand:
     if any(phrase in text for phrase in ("what is on my screen", "what's on my screen", "read my screen", "describe my screen", "look at my screen", "analyze screen", "check screen", "see my screen")):
         return TaskCommand.SCREEN_VISION
     # ── Screen Intelligence & Autonomous Desktop Operator ──
-    if any(phrase in text for phrase in ("observe screen", "inspect screen", "scan screen", "desktop perception", "read screen elements")):
+    if (
+        any(phrase in text for phrase in (
+            "observe screen", "inspect screen", "scan screen", "desktop perception", "read screen elements",
+            "observe my screen", "observe the screen", "inspect my screen", "inspect the screen",
+            "scan my screen", "scan the screen", "check my screen", "check the screen",
+            "active application, active window", "five visible elements", "tell me the active application",
+        ))
+        or bool(re.search(r"\b(?:observe|inspect|scan)\s+(?:my\s+|the\s+)?screen\b", text, re.IGNORECASE))
+        or any(w in text for w in ("ನನ್ನ ಸ್ಕ್ರೀನ್ ನೋಡು", "ಸ್ಕ್ರೀನ್ ವೀಕ್ಷಿಸು", "मेरी स्क्रीन देखो", "स्क्रीन का निरीक्षण करो", "எனது திரையைப் பார்", "నా స్క్రీన్ చూడండి"))
+    ):
         return TaskCommand.OBSERVE_SCREEN
     if any(phrase in text for phrase in ("find the ", "locate the ", "where is the ", "find element ", "find button ")) and any(k in text for k in ("button", "field", "box", "menu", "tab", "window", "element")):
         return TaskCommand.RESOLVE_UI_ELEMENT
