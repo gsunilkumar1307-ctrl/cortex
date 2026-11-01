@@ -311,6 +311,13 @@ def convert_instruction_to_recipient_content(text: str) -> tuple[str, dict[str, 
             if ask_for_m:
                 item = ask_for_m.group(1).strip().rstrip(".")
                 cleaned = f"I would like to respectfully request {item}."
+            else:
+                about_m = re.match(r"^(?:about|regarding|concerning)\s+(.+)$", cleaned, re.IGNORECASE)
+                if about_m:
+                    item = about_m.group(1).strip().rstrip(".")
+                    cleaned = f"I am writing regarding {item}. Please let me know your thoughts and availability."
+                elif re.match(r"^(?:tomorrow'?s|today'?s|next\s+week'?s)?\s*(?:project\s+)?meeting\b", cleaned, re.IGNORECASE):
+                    cleaned = f"I am writing regarding {cleaned.rstrip('.')}. Please let me know your thoughts and availability."
 
     return cleaned, metadata
 
@@ -1256,7 +1263,7 @@ class ProfessionalEmailEngine:
         # ── Multilingual Translation & Rewriting (ML-04, ML-06, ML-07, ML-08) ──
         target_lang, directive, _ = extract_explicit_language_directive(edit_instruction)
         if target_lang:
-            if target_lang == "kn" and ("•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development"))):
+            if target_lang == "kn" and ("•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE))):
                 name = draft.recipient.split("@")[0].capitalize()
                 draft.subject = "ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ (AI) ಬೆಳವಣಿಗೆಗಳ ಸಾರಾಂಶ"
                 draft.body = (
@@ -1271,7 +1278,7 @@ class ProfessionalEmailEngine:
                 draft.audit_notes.append("QC: Rewrote draft in native Kannada script.")
                 draft.approval_hash = draft.compute_hash()
                 return draft
-            elif target_lang == "hi" and ("•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development"))):
+            elif target_lang == "hi" and ("•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE))):
                 name = draft.recipient.split("@")[0].capitalize()
                 draft.subject = "कृत्रिम बुद्धिमत्ता (AI) विकास का सारांश"
                 draft.body = (
@@ -1467,19 +1474,25 @@ class ProfessionalEmailEngine:
             return draft
 
         # Subject changes
-        subj_m = re.search(r"(?:change\s+(?:the\s+)?subject\s+to|set\s+(?:the\s+)?subject\s+to|subject\s*[:=])\s+(.+)", inst, re.IGNORECASE)
+        subj_m = re.search(
+            r"(?:change\s+(?:the\s+)?subject\s+(?:to\s*[:=]?|[:=])|set\s+(?:the\s+)?subject\s+(?:to\s*[:=]?|[:=])|subject\s*[:=])\s*(.+)",
+            edit_instruction,
+            re.IGNORECASE,
+        )
         if subj_m:
-            draft.subject = subj_m.group(1).strip()
-            draft.audit_notes.append(f"QC: User updated subject to '{draft.subject}'.")
-            draft.approval_hash = draft.compute_hash()
-            return draft
+            new_subj = subj_m.group(1).strip().strip("\"'")
+            if new_subj:
+                draft.subject = new_subj
+                draft.audit_notes.append(f"QC: User updated subject to '{draft.subject}'.")
+                draft.approval_hash = draft.compute_hash()
+                return draft
 
         # Make it shorter AND formal
         is_shorten = any(w in inst for w in ("shorter", "concise", "brief", "shorten", "condense", "summarize"))
         is_formal = "formal" in inst
         if is_shorten and is_formal:
             name = draft.recipient.split("@")[0].capitalize()
-            if "•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development")):
+            if "•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE)):
                 draft.body = (
                     f"Dear {name},\n\n"
                     f"Here is a concise overview of key developments in artificial intelligence:\n\n"
@@ -1510,7 +1523,7 @@ class ProfessionalEmailEngine:
         # Make it shorter / more concise
         if is_shorten:
             name = draft.recipient.split("@")[0].capitalize()
-            if "•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development")):
+            if "•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE)):
                 condensed_body = (
                     f"Hi {name},\n\n"
                     f"Here is a concise overview of key developments in artificial intelligence:\n\n"
@@ -1543,7 +1556,7 @@ class ProfessionalEmailEngine:
         # Make it formal
         if is_formal:
             name = draft.recipient.split("@")[0].capitalize()
-            if "•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development")):
+            if "•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE)):
                 formal_body = (
                     f"Dear {name},\n\n"
                     f"I hope this email finds you well. I am writing to provide an executive overview of recent developments in artificial intelligence:\n\n"

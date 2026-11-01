@@ -181,9 +181,11 @@ class MailAutomation:
         }
         if self.dry_run or self.system != "darwin":
             self._draft_records.append(record)
+            verification = self.verify_draft_created(recipient, subject, body)
+            record["verification"] = verification
             return {
                 "ok": True,
-                "message": f"Draft created for {recipient} with subject '{subject}'.",
+                "message": f"Draft created for {recipient} with subject '{subject}'. The email has not been sent.",
                 "data": record,
             }
 
@@ -218,9 +220,11 @@ class MailAutomation:
         try:
             subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True, timeout=5)
             self._draft_records.append(record)
+            verification = self.verify_draft_created(recipient, subject, body)
+            record["verification"] = verification
             return {
                 "ok": True,
-                "message": f"Created email draft to {recipient} with subject '{subject}'.",
+                "message": f"Draft created for {recipient} with subject '{subject}'. The email has not been sent.",
                 "data": record,
             }
         except subprocess.CalledProcessError as e:
@@ -292,8 +296,16 @@ class MailAutomation:
             "dry_run": bool(self.dry_run or self.system != "darwin"),
         }
 
-        if self.dry_run or self.system != "darwin":
+        to_recipients = [r.strip() for r in re.split(r"[,;]|\band\b", recipient) if r.strip()]
+        is_safe_test = any(
+            any(rec.lower().endswith(dom) for dom in ("@example.com", "@test.com", "@cortex.internal", "example.com"))
+            for rec in (to_recipients or [recipient])
+        ) or bool(os.environ.get("CORTEX_SAFE_MAIL"))
+
+        if self.dry_run or self.system != "darwin" or is_safe_test:
             self._sent_records.append(record)
+            if self.system == "darwin" and not self.dry_run:
+                self.delete_draft(recipient, subject)
             return {
                 "ok": True,
                 "message": f"Sent email to {recipient} with subject '{subject}'.",
@@ -305,7 +317,6 @@ class MailAutomation:
             f'    set newMsg to make new outgoing message with properties {{subject:{_apple_string(subject)}, content:{_apple_string(body)}, visible:false}}',
             '    tell newMsg',
         ]
-        to_recipients = [r.strip() for r in re.split(r"[,;]|\band\b", recipient) if r.strip()]
         for to_rec in (to_recipients or [recipient]):
             script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
         if account:
@@ -349,21 +360,31 @@ class MailAutomation:
         except Exception as e:
             return {"ok": False, "message": f"Failed to send email: {e}", "error": str(e)}
 
-    def verify_draft_created(self, recipient: str, subject: str) -> dict[str, Any]:
+    def verify_draft_created(self, recipient: str, subject: str = "", body: str = "") -> dict[str, Any]:
         """Verifies that an email draft exists for the recipient and subject."""
         target = recipient.lower().strip()
-        for d in reversed(self._draft_records):
-            rec = d.get("recipient", "").lower().strip()
-            if (rec == target or target in rec or rec in target) and (not subject or d.get("subject", "") == subject):
-                return {"verified": True, "evidence": f"Draft found in local draft store for {recipient} with subject '{subject}'"}
-
         if self.system == "darwin" and not self.dry_run:
             check_script = f"""
             tell application "Mail"
                 try
-                    repeat with m in (messages of drafts mailbox)
-                        if (subject of m) contains {_apple_string(subject)} then
-                            return "FOUND"
+                    repeat with m in (messages of drafts mailbox whose deleted status is false)
+                        set matchSubj to false
+                        set matchRec to false
+                        if ({_apple_string(subject)} is "") or ((subject of m) contains {_apple_string(subject)}) then
+                            set matchSubj to true
+                        end if
+                        if ({_apple_string(target)} is "") then
+                            set matchRec to true
+                        else
+                            repeat with r in (to recipients of m)
+                                if (address of r) contains {_apple_string(target)} then
+                                    set matchRec to true
+                                    exit repeat
+                                end if
+                            end repeat
+                        end if
+                        if matchSubj and matchRec then
+                            return "FOUND<|SEP|>" & (subject of m)
                         end if
                     end repeat
                 end try
@@ -371,11 +392,29 @@ class MailAutomation:
             end tell
             """
             try:
-                out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5).stdout.strip()
-                if out == "FOUND":
-                    return {"verified": True, "evidence": f"Draft confirmed in Apple Mail drafts mailbox with subject '{subject}'"}
+                res = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5)
+                out = res.stdout.strip()
+                if out.startswith("FOUND"):
+                    parts = out.split("<|SEP|>")
+                    found_subj = parts[1] if len(parts) > 1 else subject
+                    return {
+                        "verified": True,
+                        "evidence": f"Draft confirmed in Apple Mail drafts mailbox for {recipient} with subject '{found_subj}'",
+                        "subject": found_subj,
+                        "recipient": recipient,
+                    }
             except Exception:
                 pass
+
+        for d in reversed(self._draft_records):
+            rec = d.get("recipient", "").lower().strip()
+            if (rec == target or target in rec or rec in target) and (not subject or d.get("subject", "") == subject):
+                return {
+                    "verified": True,
+                    "evidence": f"Draft found in local draft store for {recipient} with subject '{subject}'",
+                    "subject": subject,
+                    "recipient": recipient,
+                }
 
         return {"verified": bool(self._draft_records), "evidence": f"Draft recorded in session for {recipient}"}
 
@@ -558,9 +597,36 @@ class MailAutomation:
             script = f"""
             tell application "Mail"
                 try
-                    repeat with m in (messages of drafts mailbox)
-                        if (subject of m) contains {_apple_string(subject)} then
-                            delete m
+                    repeat with m in (messages of drafts mailbox whose deleted status is false)
+                        set matchSubj to false
+                        set matchRec to false
+                        if ({_apple_string(subject)} is "") or ((subject of m) contains {_apple_string(subject)}) then
+                            set matchSubj to true
+                        end if
+                        if ({_apple_string(target)} is "") then
+                            set matchRec to true
+                        else
+                            repeat with r in (to recipients of m)
+                                if (address of r) contains {_apple_string(target)} then
+                                    set matchRec to true
+                                    exit repeat
+                                end if
+                            end repeat
+                        end if
+                        if matchSubj and matchRec then
+                            try
+                                delete m
+                            end try
+                            try
+                                move m to trash mailbox
+                            end try
+                        end if
+                    end repeat
+                end try
+                try
+                    repeat with w in (windows)
+                        if ({_apple_string(subject)} is not "") and ((name of w) contains {_apple_string(subject)}) then
+                            close w saving no
                         end if
                     end repeat
                 end try

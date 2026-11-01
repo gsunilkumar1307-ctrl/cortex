@@ -944,7 +944,7 @@ def command_from_intent(intent: str) -> TaskCommand:
         text = prefix_match.group(1).strip()
     if text.startswith(("calculate ", "compute ")) or (text.startswith(("what is ", "what's ")) and any(word in text for word in (" plus ", " minus ", " times ", " divided by ", "+", "-", "*", "/"))) or any(word in text for word in (" plus ", " minus ", " times ", " divided by ")):
         return TaskCommand.CALCULATE
-    if text.startswith(("write note ", "write a note ", "create note ", "create a note ", "take a note ", "note ")):
+    if text.startswith(("write note ", "write a note ", "create note ", "create a note ", "take a note ", "note ", "open that note", "open the note", "open this note", "view that note")) or text in ("open that note", "open the note", "open this note"):
         return TaskCommand.WRITE_NOTE
     if (
         text.startswith((

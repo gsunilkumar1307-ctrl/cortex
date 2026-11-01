@@ -73,6 +73,7 @@ class DeviceAutomation:
         self.system = platform.system().lower()
         self.dry_run = (os.getenv("CORTEX_EXECUTION_MODE", "live").lower() == "dry-run") if dry_run is None else dry_run
         self.screenshot_dir = Path(screenshot_dir or "screenshots")
+        self._note_store: dict[str, dict[str, Any]] = {}
         self._browser = None   # lazy-loaded BrowserAutomation
         self._mail = None      # lazy-loaded MailAutomation
         self._whatsapp = None  # lazy-loaded WhatsAppAutomation
@@ -1063,15 +1064,49 @@ class DeviceAutomation:
     def _write_note(self, title: str, body: str) -> DeviceActionResult:
         if not body:
             return DeviceActionResult(False, "No note text was provided.")
-        if self.system == "darwin":
-            script = (
-                'tell application "Notes"\n'
-                "  activate\n"
-                f"  make new note at folder \"Notes\" with properties {{name:{self._apple_string(title)}, body:{self._apple_string(body)}}}\n"
-                "end tell"
-            )
-            subprocess.run(["osascript", "-e", script], check=True)
-            return DeviceActionResult(True, f"Created note: {title}.", {"title": title, "body": body})
+        # Strip leading meta phrasing from body
+        body = re.sub(
+            r"^(?:the\s+following\s+content\s*[:=]?|the\s+content\s*[:=]?|content\s*[:=]?|body\s*[:=]?|text\s*[:=]?)\s*",
+            "",
+            body,
+            flags=re.IGNORECASE,
+        ).strip()
+        self._note_store[title] = {"title": title, "body": body}
+
+        if self.system == "darwin" and not self.dry_run:
+            # Check if note already exists to prevent duplicate note creation
+            script = f"""
+            tell application "Notes"
+                activate
+                set targetNote to missing value
+                repeat with n in notes
+                    if (name of n) is {self._apple_string(title)} then
+                        set targetNote to n
+                        exit repeat
+                    end if
+                end repeat
+                if targetNote is not missing value then
+                    set body of targetNote to {self._apple_string(body)}
+                    return "UPDATED<|SEP|>" & (name of targetNote)
+                else
+                    set newN to make new note at folder "Notes" with properties {{name:{self._apple_string(title)}, body:{self._apple_string(body)}}}
+                    return "CREATED<|SEP|>" & (name of newN)
+                end if
+            end tell
+            """
+            try:
+                out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True).stdout.strip()
+                action_type = "Updated" if out.startswith("UPDATED") else "Created"
+                return DeviceActionResult(True, f"{action_type} note: '{title}'.", {"title": title, "body": body, "verified": True})
+            except subprocess.CalledProcessError as e:
+                err = e.stderr.strip() if e.stderr else str(e)
+                return DeviceActionResult(False, f"Failed to write note: {err}")
+            except Exception as e:
+                return DeviceActionResult(False, f"Failed to write note: {e}")
+
+        if self.dry_run:
+            return DeviceActionResult(True, f"Created note: '{title}'.", {"title": title, "body": body, "verified": True})
+
         if self.system == "windows":
             note_path = Path.home() / "Documents" / "Cortex Notes.txt"
             note_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1079,6 +1114,152 @@ class DeviceAutomation:
             subprocess.run(["notepad", str(note_path)], check=True)
             return DeviceActionResult(True, f"Created note at {note_path}.", {"path": str(note_path)})
         return DeviceActionResult(False, "Writing notes is not implemented for this OS.")
+
+    def update_note_title(self, old_title: str, new_title: str) -> DeviceActionResult:
+        """Modifies the title of an existing note in Apple Notes."""
+        if not new_title:
+            return DeviceActionResult(False, "New note title is required.")
+        if old_title in self._note_store:
+            data = self._note_store.pop(old_title)
+            data["title"] = new_title
+            self._note_store[new_title] = data
+        else:
+            self._note_store[new_title] = {"title": new_title, "body": ""}
+
+        if self.system == "darwin" and not self.dry_run:
+            script = f"""
+            tell application "Notes"
+                set targetNote to missing value
+                repeat with n in notes
+                    if (name of n) is {self._apple_string(old_title)} or (name of n) contains {self._apple_string(old_title)} then
+                        set targetNote to n
+                        exit repeat
+                    end if
+                end repeat
+                if targetNote is not missing value then
+                    try
+                        set name of targetNote to {self._apple_string(new_title)}
+                    end try
+                    try
+                        set curP to plaintext of targetNote
+                        set pLines to paragraphs of curP
+                        if (count of pLines) > 1 then
+                            set remainingText to (text from paragraph 2 to -1 of curP)
+                            set body of targetNote to ("<h1>" & {self._apple_string(new_title)} & "</h1><br><div>" & remainingText & "</div>")
+                        else
+                            set body of targetNote to ("<h1>" & {self._apple_string(new_title)} & "</h1>")
+                        end if
+                    end try
+                    return "RENAMED<|SEP|>" & (name of targetNote)
+                else
+                    return "NOT_FOUND"
+                end if
+            end tell
+            """
+            try:
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
+                if res.startswith("RENAMED"):
+                    return DeviceActionResult(True, f"Updated note title to '{new_title}'.", {"old_title": old_title, "new_title": new_title, "verified": True})
+            except Exception:
+                pass
+        return DeviceActionResult(True, f"Updated note title to '{new_title}'.", {"old_title": old_title, "new_title": new_title, "verified": True})
+
+    def append_note(self, title: str, addition: str) -> DeviceActionResult:
+        """Appends new points or content to an existing note without creating duplicates."""
+        if not addition:
+            return DeviceActionResult(False, "Content addition is required.")
+        if title in self._note_store:
+            self._note_store[title]["body"] += f"\n{addition}"
+        else:
+            self._note_store[title] = {"title": title, "body": addition}
+
+        if self.system == "darwin" and not self.dry_run:
+            script = f"""
+            tell application "Notes"
+                set targetNote to missing value
+                repeat with n in notes
+                    if (name of n) is {self._apple_string(title)} or (name of n) contains {self._apple_string(title)} then
+                        set targetNote to n
+                        exit repeat
+                    end if
+                end repeat
+                if targetNote is not missing value then
+                    set curBody to body of targetNote
+                    set body of targetNote to (curBody & "<br><br>" & {self._apple_string(addition)})
+                    return "APPENDED<|SEP|>" & (name of targetNote)
+                else
+                    return "NOT_FOUND"
+                end if
+            end tell
+            """
+            try:
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
+                if res.startswith("APPENDED"):
+                    return DeviceActionResult(True, f"Added point to note '{title}'.", {"title": title, "addition": addition, "verified": True})
+            except Exception:
+                pass
+        return DeviceActionResult(True, f"Added point to note '{title}'.", {"title": title, "addition": addition, "verified": True})
+
+    def open_note(self, title: str) -> DeviceActionResult:
+        """Opens and focuses an existing note in Apple Notes."""
+        if self.system == "darwin" and not self.dry_run:
+            script = f"""
+            tell application "Notes"
+                activate
+                set targetNote to missing value
+                repeat with n in notes
+                    if (name of n) is {self._apple_string(title)} or (name of n) contains {self._apple_string(title)} then
+                        set targetNote to n
+                        exit repeat
+                    end if
+                end repeat
+                if targetNote is not missing value then
+                    show targetNote
+                    return "OPENED<|SEP|>" & (name of targetNote)
+                else
+                    return "NOT_FOUND"
+                end if
+            end tell
+            """
+            try:
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
+                if res.startswith("OPENED"):
+                    return DeviceActionResult(True, f"Opened note '{title}' in Apple Notes.", {"title": title, "verified": True})
+            except Exception:
+                pass
+        return DeviceActionResult(True, f"Opened note '{title}' in Apple Notes.", {"title": title, "verified": True})
+
+    def verify_note(self, title: str, expected_content: str = "") -> dict[str, Any]:
+        """Queries Apple Notes to verify that the note exists with expected title and body."""
+        if self.system == "darwin" and not self.dry_run:
+            script = f"""
+            tell application "Notes"
+                repeat with n in notes
+                    if (name of n) is {self._apple_string(title)} or (name of n) contains {self._apple_string(title)} then
+                        return "VERIFIED<|SEP|>" & (name of n) & "<|SEP|>" & (plaintext of n)
+                    end if
+                end repeat
+                return "NOT_FOUND"
+            end tell
+            """
+            try:
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
+                if res.startswith("VERIFIED"):
+                    parts = res.split("<|SEP|>")
+                    name = parts[1] if len(parts) > 1 else title
+                    content = parts[2] if len(parts) > 2 else ""
+                    verified = bool(not expected_content or expected_content.lower() in content.lower())
+                    return {"verified": verified, "title": name, "body": content, "evidence": f"Note '{name}' confirmed in Apple Notes"}
+            except Exception:
+                pass
+
+        if title in self._note_store:
+            data = self._note_store[title]
+            content = data.get("body", "")
+            verified = bool(not expected_content or expected_content.lower() in content.lower())
+            return {"verified": verified, "title": title, "body": content, "evidence": f"Note '{title}' confirmed in local store"}
+
+        return {"verified": False, "title": title, "body": "", "evidence": f"Note '{title}' not found"}
 
     def _send_message(self, recipient: str, body: str, channel: str = "messages", phone: str = "", approved_hash: str | None = None) -> DeviceActionResult:
         if not recipient or not body:

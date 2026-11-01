@@ -300,6 +300,7 @@ class CortexOrchestrator:
         self.last_search_query: str = ""
         self.last_selected_result: dict[str, Any] | None = None
         self.last_opened_url: str = ""
+        self.last_note: dict[str, Any] | None = None
 
         self.policy_engine = PolicyEngine()
         self.policy = self.policy_engine
@@ -642,7 +643,7 @@ class CortexOrchestrator:
                 return True
 
         # General questions (for recipient clarification or disambiguation, questions are unrelated)
-        if step in ("waiting_for_recipient_clarification", "waiting_for_recipient_disambiguation", "waiting_for_recipient", "confirm_send"):
+        if step in ("waiting_for_recipient_clarification", "waiting_for_recipient_disambiguation", "waiting_for_recipient", "confirm_send", "draft_only_review"):
             question_starters = (
                 "what is", "what's", "what are", "who is", "who's", "who are",
                 "how does", "how do", "how is", "how to", "why is", "why do", "why does",
@@ -897,9 +898,17 @@ class CortexOrchestrator:
                 elif is_confirm:
                     task_id = pending["task_id"]
                     recipient = pending["recipient"]
+                    task = self.tasks[task_id]
+                    if task.command == TaskCommand.DRAFT_MAIL or task.status == TaskStatus.COMPLETED:
+                        task.command = TaskCommand.SEND_MAIL
+                        task.status = TaskStatus.WAITING_APPROVAL
+                        task.params["approval_hash"] = (
+                            getattr(pending.get("draft"), "approval_hash", None)
+                            or task.params.get("approval_hash")
+                        )
                     self.pending_action = None
                     approved_task = self.approve(task_id, approved=True)
-                    if approved_task.get("status") in (TaskStatus.FAILED.value, TaskStatus.FAILED, "failed"):
+                    if approved_task.get("status") in (TaskStatus.FAILED.value, TaskStatus.FAILED, "failed") or approved_task.get("error"):
                         return {
                             "task": approved_task,
                             "message": approved_task.get("error") or "Failed to send email.",
@@ -921,6 +930,8 @@ class CortexOrchestrator:
                     draft = pending.get("draft")
                     if not draft:
                         draft = EmailDraft(recipient=pending["recipient"], subject=pending["subject"], body=pending.get("formatted_body") or pending["body"], sender_account=pending.get("sender_account", ""))
+                    old_subject = draft.subject
+                    old_recipient = draft.recipient
                     updated_draft = self.email_engine.update_draft_with_edit(draft, message)
                     if hasattr(updated_draft, "language") and updated_draft.language:
                         p_lang = updated_draft.language
@@ -947,6 +958,12 @@ class CortexOrchestrator:
                     task.params["approval_hash"] = updated_draft.approval_hash
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.add_event("draft_edited", f"Draft updated: {message}")
+
+                    if old_subject and old_subject != updated_draft.subject:
+                        try:
+                            self.automation.mail.delete_draft(old_recipient, old_subject)
+                        except Exception:
+                            pass
 
                     draft_saved = True
                     save_error = ""
@@ -1716,7 +1733,7 @@ class CortexOrchestrator:
                 self._persist_task(task)
                 return {"task": task.to_dict(), "message": format_whatsapp_approval_card(draft, lang_code=p_lang)}
 
-            elif pending.get("type") == "whatsapp_draft" and pending.get("step") == "confirm_send":
+            elif pending.get("type") == "whatsapp_draft" and pending.get("step") in ("confirm_send", "draft_only_review"):
                 task_id = pending.get("task_id")
                 task = self.tasks.get(task_id) or pending.get("task")
                 recipient = pending.get("recipient", "")
@@ -1815,6 +1832,28 @@ class CortexOrchestrator:
                 self.tasks[task.id] = task
                 response = localize("approval_prompt", raw_lang_code, action=f"send message to {recipient}")
                 return {"task": task.to_dict(), "message": response}
+
+        # Check for contextual Apple Notes follow-ups
+        if self.last_note:
+            msg_clean = message.strip()
+            msg_low = msg_clean.lower().rstrip(".!")
+            if any(msg_low == phrase or msg_low.startswith(phrase + " ") for phrase in ("open that note", "open the note", "open this note", "view that note")):
+                task = Task(intent=message, command=TaskCommand.WRITE_NOTE, risk_level=RiskLevel.LOW, requires_approval=False, params={"action": "open_note"}, language=detected_lang)
+                self.tasks[task.id] = task
+                self._execute(task)
+                return {"task": task.to_dict(), "message": task.result or f"Opened note '{self.last_note['title']}' in Apple Notes."}
+            elif any(phrase in msg_low for phrase in ("make the title shorter", "make title shorter", "shorten the title", "shorten title")):
+                task = Task(intent=message, command=TaskCommand.WRITE_NOTE, risk_level=RiskLevel.LOW, requires_approval=False, params={"action": "shorten_title"}, language=detected_lang)
+                self.tasks[task.id] = task
+                self._execute(task)
+                return {"task": task.to_dict(), "message": task.result or f"Updated note title to '{self.last_note['title']}'."}
+            elif re.search(r"^(?:add\s+(?:this\s+)?point\s*[:=]?|add\s+(?:to\s+(?:the\s+)?note)?\s*[:=]?)\s*(.+)", msg_clean, re.IGNORECASE):
+                m_pt = re.search(r"^(?:add\s+(?:this\s+)?point\s*[:=]?|add\s+(?:to\s+(?:the\s+)?note)?\s*[:=]?)\s*(.+)", msg_clean, re.IGNORECASE)
+                point_text = m_pt.group(1).strip()
+                task = Task(intent=message, command=TaskCommand.WRITE_NOTE, risk_level=RiskLevel.LOW, requires_approval=False, params={"action": "append_note", "point": point_text}, language=detected_lang)
+                self.tasks[task.id] = task
+                self._execute(task)
+                return {"task": task.to_dict(), "message": task.result or f"Added point to note '{self.last_note['title']}':\n{point_text}"}
 
         sequence = self._split_sequence(message)
         if len(sequence) > 1:
@@ -2318,7 +2357,7 @@ class CortexOrchestrator:
 
                 if command == TaskCommand.DRAFT_MAIL:
                     task.status = TaskStatus.COMPLETED
-                    task.result = f"Draft created for {draft.recipient} with subject '{draft.subject}'."
+                    task.result = f"Draft created for {draft.recipient} with subject '{draft.subject}'. The email has not been sent."
                     task.add_event("completed", task.result)
                     response = task.result
                     self.pending_action = {
@@ -2716,6 +2755,7 @@ class CortexOrchestrator:
                     self.task_store.record_action_attempt(attempt)
                     attempt_id = attempt.id
 
+                task.params["task_id"] = task.id
                 task.transition_to(TaskStatus.EXECUTING, reason="Action approved by user")
                 self._execute(task)
                 task.params["approval_consumed"] = True
@@ -3853,6 +3893,88 @@ class CortexOrchestrator:
                 task.add_event("failed", read_result.message)
             return
 
+        # ── Phase 8: Apple Notes Execution ─────────────────────────────
+        if task.command == TaskCommand.WRITE_NOTE:
+            action = task.params.get("action", "")
+            if action == "open_note":
+                note_title = (self.last_note.get("title", "") if self.last_note else "") or task.params.get("title", "")
+                if not note_title:
+                    task.status = TaskStatus.FAILED
+                    task.error = "No recent note found to open."
+                    task.add_event("failed", task.error)
+                    return
+                res = self.automation.open_note(note_title)
+                if res.ok:
+                    task.status = TaskStatus.COMPLETED
+                    task.result = f"Opened note '{note_title}' in Apple Notes."
+                    task.add_event("completed", task.result)
+                else:
+                    task.status = TaskStatus.FAILED
+                    task.error = res.message
+                    task.add_event("failed", task.error)
+                return
+
+            if action == "shorten_title":
+                if not self.last_note or not self.last_note.get("title"):
+                    task.status = TaskStatus.FAILED
+                    task.error = "No recent note found to update."
+                    task.add_event("failed", task.error)
+                    return
+                old_title = self.last_note["title"]
+                words = old_title.split()
+                if len(words) > 1 and words[0].lower() in ("project", "team", "sync", "weekly", "daily", "cortex", "my"):
+                    new_title = " ".join(words[1:]).capitalize()
+                elif len(words) > 1:
+                    new_title = words[-1].capitalize()
+                else:
+                    new_title = words[0][:5] if words else "Note"
+                res = self.automation.update_note_title(old_title, new_title)
+                if res.ok:
+                    self.last_note["title"] = new_title
+                    task.status = TaskStatus.COMPLETED
+                    task.result = f"Updated note title to '{new_title}' in Apple Notes."
+                    task.add_event("completed", task.result)
+                else:
+                    task.status = TaskStatus.FAILED
+                    task.error = res.message
+                    task.add_event("failed", task.error)
+                return
+
+            if action == "append_note":
+                if not self.last_note or not self.last_note.get("title"):
+                    task.status = TaskStatus.FAILED
+                    task.error = "No recent note found to update."
+                    task.add_event("failed", task.error)
+                    return
+                target_title = self.last_note["title"]
+                addition = task.params.get("point", "")
+                res = self.automation.append_note(target_title, addition)
+                if res.ok:
+                    self.last_note["body"] += f"\n{addition}"
+                    task.status = TaskStatus.COMPLETED
+                    task.result = f"Added point to note '{target_title}':\n{addition}"
+                    task.add_event("completed", task.result)
+                else:
+                    task.status = TaskStatus.FAILED
+                    task.error = res.message
+                    task.add_event("failed", task.error)
+                return
+
+            # Standard create note
+            title = task.params.get("title", "Cortex Note")
+            body = task.params.get("body", "")
+            res = self.automation.execute(TaskCommand.WRITE_NOTE, task.params)
+            if res.ok:
+                self.last_note = {"title": title, "body": body}
+                task.status = TaskStatus.COMPLETED
+                task.result = f"Created note titled '{title}' with content: {body}"
+                task.add_event("completed", task.result)
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = res.message
+                task.add_event("failed", task.error)
+            return
+
         # Pipeline execution with execute -> observe -> verify -> recover loop
         if not task.plan:
             task.plan = self.planner.plan(task.intent, task.command, task.params, task.context)
@@ -4022,12 +4144,26 @@ class CortexOrchestrator:
                 return {"item": full.group(1).strip(), "menu": full.group(2).strip(), "appName": full.group(3).strip()}
             return {"raw": text}
         if command == TaskCommand.WRITE_NOTE:
-            titled = re.search(r"(?:write|create|take)\s+(?:a\s+)?note\s+(?:called|titled|named)\s+(.+?)\s+(?:saying|with|that says|:)\s+(.+)", text, re.IGNORECASE)
+            if any(p in text.lower() for p in ("open that note", "open the note", "open this note", "view that note")):
+                return {"action": "open_note"}
+            if any(p in text.lower() for p in ("make the title shorter", "make title shorter", "shorten the title", "shorten title")):
+                return {"action": "shorten_title"}
+            point_m = re.search(r"^(?:add\s+(?:this\s+)?point\s*[:=]?|add\s+(?:to\s+(?:the\s+)?note)?\s*[:=]?)\s*(.+)", text, re.IGNORECASE)
+            if point_m:
+                return {"action": "append_note", "point": point_m.group(1).strip()}
+
+            titled = re.search(
+                r"(?:write|create|take)\s+(?:a\s+)?note\s+(?:called|titled|named)\s+[\"']?([^\"'\n]+?)[\"']?\s+(?:with\s+(?:the\s+)?(?:following\s+)?(?:content|body|text)?\s*[:=]?|saying|that says|with|:)\s*(.+)",
+                text,
+                re.IGNORECASE,
+            )
             if titled:
                 title = titled.group(1).strip()
-                body = titled.group(2).strip().rstrip(".")
+                body = titled.group(2).strip()
+                body = re.sub(r"^(?:the\s+following\s+content\s*[:=]?|the\s+content\s*[:=]?|content\s*[:=]?|body\s*[:=]?|text\s*[:=]?)\s*", "", body, flags=re.IGNORECASE).strip().rstrip(".")
                 return {"title": title, "body": body}
-            titled_only = re.search(r"(?:write|create|take)\s+(?:a\s+)?note\s+(?:called|titled|named)\s+(.+)", text, re.IGNORECASE)
+
+            titled_only = re.search(r"(?:write|create|take)\s+(?:a\s+)?note\s+(?:called|titled|named)\s+[\"']?([^\"'\n]+?)[\"']?$", text, re.IGNORECASE)
             if titled_only:
                 title = titled_only.group(1).strip().rstrip(".")
                 return {"title": title, "body": ""}
