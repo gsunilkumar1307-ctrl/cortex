@@ -593,15 +593,7 @@ class CortexOrchestrator:
         # user input must NOT be treated as unrelated unless it is an explicit desktop/system command.
         if step in ("waiting_for_body", "waiting_for_edit"):
             cmd = command_from_intent(text)
-            if cmd in (
-                TaskCommand.OPEN_APP,
-                TaskCommand.CLOSE_APP,
-                TaskCommand.SHUTDOWN,
-                TaskCommand.RESTART,
-                TaskCommand.CALCULATE,
-                TaskCommand.SCREENSHOT,
-                TaskCommand.WEB_SEARCH,
-            ):
+            if cmd not in (TaskCommand.UNKNOWN, TaskCommand.ASK_QUESTION, TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
                 return True
             return False
 
@@ -643,6 +635,11 @@ class CortexOrchestrator:
         cmd = command_from_intent(text)
         if cmd not in (TaskCommand.UNKNOWN, TaskCommand.ASK_QUESTION, TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
             return True
+
+        # Check if message is referencing an earlier research summary, article, or file inspection
+        if any(w in msg_lower for w in ("summary", "research", "article", "second result", "first result", "third result", "visible filenames")):
+            if any(w in msg_lower for w in ("shorter", "shorten", "explain", "detail", "compare", "open", "show")):
+                return True
 
         # General questions (for recipient clarification or disambiguation, questions are unrelated)
         if step in ("waiting_for_recipient_clarification", "waiting_for_recipient_disambiguation", "waiting_for_recipient", "confirm_send"):
@@ -911,7 +908,14 @@ class CortexOrchestrator:
                         "task": approved_task,
                         "message": localize("email_sent", p_lang, recipient=recipient),
                     }
-                elif is_edit or (" " in msg_lower and not any(kw in msg_lower for kw in ("open ", "close ", "screenshot", "calculate", "find "))):
+                cmd_intent = command_from_intent(message)
+                is_explicit_cmd = cmd_intent not in (TaskCommand.UNKNOWN, TaskCommand.ASK_QUESTION, TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL)
+                is_summary_ref = bool(re.search(r"\b(?:make\s+(?:the\s+)?summary\s+shorter|shorten\s+(?:the\s+)?summary|open\s+(?:that|the)\s+article|explain\s+(?:the\s+)?second\s+point)\b", msg_lower))
+
+                if is_explicit_cmd or is_summary_ref:
+                    # Separate explicit command or research summary follow-up; do not swallow as an email draft edit
+                    pass
+                elif is_edit or (" " in msg_lower and not any(kw in msg_lower for kw in ("open ", "close ", "screenshot", "calculate", "find ", "search ", "observe ", "navigate "))):
                     task_id = pending["task_id"]
                     task = self.tasks[task_id]
                     draft = pending.get("draft")
@@ -2736,24 +2740,22 @@ class CortexOrchestrator:
     def cancel(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             task = self._get_task(task_id)
-            if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.CANCELLED, TaskStatus.CANCELED}:
-                task.add_event("cancel_ignored", "Task already reached a terminal state.")
-            else:
-                task.request_cancellation(reason="User interrupted the task.")
-                task.result = "Task canceled."
-                if self.pending_action and (self.pending_action.get("task_id") == task_id or (self.pending_action.get("task") and getattr(self.pending_action["task"], "id", None) == task_id)):
-                    self.pending_action = None
-                if task.params and "approval_hash" in task.params:
-                    task.params["approval_hash"] = None
-                if task.command in (TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
-                    try:
-                        self.automation.mail.delete_draft(
-                            recipient=task.params.get("recipient", ""),
-                            subject=task.params.get("subject", ""),
-                        )
-                        task.add_event("draft_deleted", "Draft removed from mailbox following cancellation.")
-                    except Exception:
-                        pass
+            task.request_cancellation(reason="User interrupted the task.")
+            task.status = TaskStatus.CANCELED
+            task.result = "Task canceled."
+            if self.pending_action and (self.pending_action.get("task_id") == task_id or (self.pending_action.get("task") and getattr(self.pending_action["task"], "id", None) == task_id)):
+                self.pending_action = None
+            if task.params and "approval_hash" in task.params:
+                task.params["approval_hash"] = None
+            if task.command in (TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
+                try:
+                    self.automation.mail.delete_draft(
+                        recipient=task.params.get("recipient", ""),
+                        subject=task.params.get("subject", ""),
+                    )
+                    task.add_event("draft_deleted", "Draft removed from mailbox following cancellation.")
+                except Exception:
+                    pass
             self._persist_task(task)
             return task.to_dict()
 
