@@ -3790,7 +3790,8 @@ class CortexOrchestrator:
             if read_result.ok:
                 task.status = TaskStatus.COMPLETED
                 task.result = read_result.message
-                task.add_event("completed", read_result.message, files=read_result.data.get("files", []))
+                self.last_file_search_result = read_result.data or {}
+                task.add_event("completed", read_result.message, files=read_result.data.get("names", []))
             else:
                 task.status = TaskStatus.FAILED
                 task.error = read_result.message
@@ -4432,17 +4433,51 @@ class CortexOrchestrator:
         if command == TaskCommand.DAILY_BRIEFING:
             return {}
         if command == TaskCommand.SEARCH_FILES:
-            clean_f = re.sub(r"^(?:open\s+finder\s+(?:and\s+|to\s+)?|finder\s+and\s+)?", "", text, flags=re.IGNORECASE).strip()
-            list_m = re.search(r"^(?:list\s+(?:files\s+in\s+|my\s+|the\s+)?|show\s+(?:files\s+in\s+|my\s+|the\s+)?)(.+)$", clean_f, re.IGNORECASE)
-            if list_m:
-                target = list_m.group(1).strip()
-                return {"pattern": "*", "directory": target}
-            m = re.search(r"(?:find file|search file|look for file|locate file|find the file)\s+(.+?)(?:\s+in\s+(.+))?$", clean_f, re.IGNORECASE)
-            if m:
-                pat = m.group(1).strip()
-                dir_ = m.group(2).strip() if m.group(2) else "."
-                return {"pattern": pat, "directory": dir_}
-            return {"pattern": text, "directory": "."}
+            t_lower = text.lower()
+            open_finder = bool(re.search(r"\bfinder\b|\bnavigate\b", t_lower))
+
+            # Resolve target directory
+            directory = "."
+            if "download" in t_lower or "ಡೌನ್‌ಲೋಡ್" in text or "डाउनलोड" in text:
+                directory = "Downloads"
+            elif "document" in t_lower or "ದಾಖಲೆ" in text or "दस्तावेज़" in text:
+                directory = "Documents"
+            elif "desktop" in t_lower or "ಡೆಸ್ಕ್‌ಟಾಪ್" in text or "डेस्कटॉप" in text:
+                directory = "Desktop"
+            else:
+                dir_m = re.search(r"\b(?:in|to|from|inside)\s+([a-zA-Z0-9_/~.-]+)\b", text, re.IGNORECASE)
+                if dir_m:
+                    directory = dir_m.group(1).strip()
+                elif open_finder:
+                    directory = "Downloads"
+
+            # Resolve limit
+            limit = 5  # default for "first five visible filenames" or standard listing
+            num_map = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "ಐದು": 5, "पाँच": 5, "पांच": 5}
+            num_m = re.search(r"\b(?:first|top)\s+(\w+|\d+)\b|\b(\d+)\s+(?:visible\s+)?(?:file|files|filename|filenames|items)\b", t_lower)
+            if num_m:
+                token = (num_m.group(1) or num_m.group(2) or "").strip()
+                if token.isdigit():
+                    limit = int(token)
+                elif token in num_map:
+                    limit = num_map[token]
+            elif "all" in t_lower or "all files" in t_lower:
+                limit = 50
+
+            # Resolve pattern
+            pattern = "*"
+            find_m = re.search(r"(?:find file|search file|look for file|locate file|find the file)\s+['\"]?([^'\"\s]+)['\"]?", text, re.IGNORECASE)
+            if find_m:
+                pattern = find_m.group(1).strip()
+
+            return {
+                "pattern": pattern,
+                "directory": directory,
+                "limit": limit,
+                "open_finder": open_finder,
+                "sort_by": "alphabetical",
+                "read_only": True,
+            }
         if command == TaskCommand.READ_FILE:
             m = re.search(r"(?:read file|open file|view file|show file)\s+(.+)", text, re.IGNORECASE)
             return {"path": m.group(1).strip() if m else text}
@@ -4454,6 +4489,10 @@ class CortexOrchestrator:
     def _split_sequence(self, message: str) -> list[str]:
         # Do not split compound browser search commands like "Open Safari and search for..." or "Open Safari, search for..."
         if re.search(r"^(?:open|launch)\s+(?:safari|chrome|browser)\s*[,;]?\s*(?:and\s+|to\s+)?(?:search|find|look\s+up|research|inspect)\b", message, re.IGNORECASE):
+            return [message]
+
+        # Do not split compound Finder navigation and inspection commands like "Open Finder, navigate to Downloads..."
+        if re.search(r"^(?:open|launch)\s+finder\b.*?\b(?:navigate|show|list|files?|filenames?|downloads?)\b", message, re.IGNORECASE):
             return [message]
 
         parts = [

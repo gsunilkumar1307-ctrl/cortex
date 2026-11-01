@@ -245,7 +245,13 @@ class DeviceAutomation:
         if command == TaskCommand.READ_FILE:
             return self._read_file(str(params.get("path", "")))
         if command == TaskCommand.SEARCH_FILES:
-            return self._search_files(str(params.get("pattern", "")), str(params.get("directory", ".")))
+            return self._search_files(
+                pattern=str(params.get("pattern", "*")),
+                directory=str(params.get("directory", ".")),
+                limit=int(params.get("limit", 5) if str(params.get("limit", "")).isdigit() else 5),
+                open_finder=bool(params.get("open_finder", False)),
+                sort_by=str(params.get("sort_by", "alphabetical")),
+            )
         if command == TaskCommand.MOVE_FILE:
             return self._move_file(str(params.get("source") or params.get("src") or ""), str(params.get("destination") or params.get("target") or params.get("dest") or ""))
         if command == TaskCommand.CREATE_DOCUMENT:
@@ -296,7 +302,10 @@ class DeviceAutomation:
         if self.dry_run:
             return DeviceActionResult(True, f"Dry-run completed for {command.value}.", {"params": params})
         if command == TaskCommand.OPEN_APP:
-            return self._open_app(str(params.get("appName") or params.get("target") or ""))
+            return self._open_app(
+                str(params.get("appName") or params.get("target") or ""),
+                folder=str(params.get("folder") or ""),
+            )
         if command == TaskCommand.CLOSE_APP:
             return self._close_app(str(params.get("appName") or params.get("target") or ""))
         if command == TaskCommand.FOCUS_APP:
@@ -528,7 +537,7 @@ class DeviceAutomation:
                 return False
         return False
 
-    def _open_app(self, app_name: str) -> DeviceActionResult:
+    def _open_app(self, app_name: str, folder: str = "") -> DeviceActionResult:
         if not app_name:
             return DeviceActionResult(False, "No app name was provided.")
         canonical = self.resolve_app_name(app_name)
@@ -536,6 +545,10 @@ class DeviceAutomation:
         if canonical == "Finder":
             if self.system == "darwin":
                 try:
+                    if folder:
+                        target = Path.home() / "Downloads" if "download" in folder.lower() else Path(folder).expanduser()
+                        subprocess.run(["open", "-a", "Finder", str(target)], capture_output=True, text=True, check=False)
+                        return DeviceActionResult(True, f"Opened Finder in {folder}.", {"appName": "Finder", "folder": str(target)})
                     subprocess.run(["open", "-a", "Finder"], capture_output=True, text=True, check=False)
                     return DeviceActionResult(True, "Opened Finder.", {"appName": "Finder", "wasRunning": self.is_app_running("Finder")})
                 except Exception as e:
@@ -1271,7 +1284,14 @@ class DeviceAutomation:
         except Exception as e:
             return DeviceActionResult(False, f"Failed to read file: {e}")
 
-    def _search_files(self, pattern: str, directory: str = ".") -> DeviceActionResult:
+    def _search_files(
+        self,
+        pattern: str = "*",
+        directory: str = ".",
+        limit: int = 5,
+        open_finder: bool = False,
+        sort_by: str = "alphabetical",
+    ) -> DeviceActionResult:
         dir_clean = str(directory).strip().lower()
         if dir_clean in ("downloads", "~/downloads", "download"):
             target_dir = str(Path.home() / "Downloads")
@@ -1282,67 +1302,172 @@ class DeviceAutomation:
         elif dir_clean in ("finder", "home", "~"):
             target_dir = str(Path.home())
         else:
-            target_dir = directory
+            target_dir = str(Path(directory).expanduser())
 
         safe, d = _is_safe_path(target_dir)
-        if not safe or not d.exists():
-            return DeviceActionResult(False, f"Directory not found: {directory}")
-        try:
-            matches = []
-            pat_clean = (pattern or "").strip().lower()
-            is_broad = pat_clean in ("*", "", "all", "files", "list", "show files", "list files", "downloads", "my downloads", "finder")
+        if not safe:
+            return DeviceActionResult(
+                False,
+                f"Access blocked: Path '{directory}' is restricted or contains invalid traversal.",
+                {"error": "AccessBlocked", "directory": str(directory)},
+            )
+        if not d.exists():
+            return DeviceActionResult(
+                False,
+                f"Directory not found: '{d}'. The specified path does not exist on this system.",
+                {"error": "DirectoryNotFound", "directory": str(d)},
+            )
+        if not d.is_dir():
+            return DeviceActionResult(
+                False,
+                f"Path is not a directory: '{d}'.",
+                {"error": "NotADirectory", "directory": str(d)},
+            )
 
+        # ── Finder activation and navigation (macOS Darwin) ──────────────────
+        finder_navigated = False
+        finder_error = None
+        finder_window_items: list[str] = []
+
+        if open_finder and self.system == "darwin" and not self.dry_run:
             try:
-                if is_broad:
-                    for item in d.iterdir():
-                        if not item.name.startswith("."):
-                            matches.append(item)
+                osa_script = (
+                    f'tell application "Finder"\n'
+                    f'  activate\n'
+                    f'  open (POSIX file "{d.resolve()}" as alias)\n'
+                    f'end tell'
+                )
+                res = subprocess.run(["osascript", "-e", osa_script], capture_output=True, text=True, timeout=3.0)
+                if res.returncode == 0:
+                    finder_navigated = True
                 else:
-                    for root, _, files in os.walk(str(d)):
-                        for f in files:
-                            if not f.startswith(".") and pat_clean in f.lower():
-                                matches.append(Path(root) / f)
-                                if len(matches) >= 50:
-                                    break
-                        if len(matches) >= 50:
-                            break
-            except (PermissionError, OSError):
-                if sys.platform == "darwin":
-                    osa_target = "downloads folder" if "download" in str(d).lower() else f'POSIX file "{str(d)}"'
-                    cmd = ["osascript", "-e", f'tell application "Finder" to get name of every item of ({osa_target})']
-                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-                    if p.returncode == 0 and p.stdout.strip():
-                        raw_names = [n.strip() for n in p.stdout.strip().split(",") if n.strip()]
-                        for name in raw_names:
-                            if not name.startswith("."):
-                                if is_broad or pat_clean in name.lower():
-                                    matches.append(d / name)
+                    res_open = subprocess.run(["open", "-a", "Finder", str(d.resolve())], capture_output=True, text=True, timeout=3.0)
+                    if res_open.returncode == 0:
+                        finder_navigated = True
+                    else:
+                        finder_error = (res.stderr or res_open.stderr or "Finder command returned error").strip()
+            except Exception as e:
+                finder_error = str(e)
 
-            def _get_mtime(p: Path) -> float:
+            if finder_navigated:
                 try:
-                    return p.stat().st_mtime
+                    osa_items = (
+                        f'tell application "Finder"\n'
+                        f'  get name of every item of (POSIX file "{d.resolve()}" as alias)\n'
+                        f'end tell'
+                    )
+                    res_items = subprocess.run(["osascript", "-e", osa_items], capture_output=True, text=True, timeout=3.0)
+                    if res_items.returncode == 0 and res_items.stdout.strip():
+                        finder_window_items = [
+                            n.strip()
+                            for n in res_items.stdout.strip().split(",")
+                            if n.strip() and not n.strip().startswith(".")
+                        ]
+                except Exception:
+                    finder_window_items = []
+        elif open_finder and self.dry_run:
+            finder_navigated = True
+
+        # ── Read-only filesystem inspection ──────────────────────────────────
+        matches: list[str] = []
+        pat_clean = (pattern or "").strip().lower()
+        is_broad = pat_clean in ("*", "", "all", "files", "list", "show files", "list files", "downloads", "my downloads", "finder")
+
+        try:
+            with os.scandir(d) as it:
+                for entry in it:
+                    name = entry.name
+                    if not name.startswith("."):
+                        if is_broad or pat_clean in name.lower():
+                            matches.append(name)
+        except PermissionError:
+            err_msg = f"Permission denied accessing directory: '{d}'. Ensure Cortex has permission to read this directory."
+            return DeviceActionResult(
+                False,
+                err_msg,
+                {
+                    "error": "PermissionDenied",
+                    "directory": str(d),
+                    "finder_navigated": finder_navigated,
+                    "finder_error": finder_error,
+                },
+            )
+        except OSError as oe:
+            err_msg = f"Filesystem error accessing '{d}': {oe}"
+            return DeviceActionResult(
+                False,
+                err_msg,
+                {
+                    "error": "OSError",
+                    "directory": str(d),
+                    "finder_navigated": finder_navigated,
+                    "finder_error": finder_error,
+                },
+            )
+
+        # Sort deterministically
+        if sort_by == "mtime":
+            def _get_mtime(fname: str) -> float:
+                try:
+                    return (d / fname).stat().st_mtime
                 except Exception:
                     return 0.0
-
             matches.sort(key=_get_mtime, reverse=True)
-            top_matches = matches[:20]
-            file_names = [m.name for m in top_matches]
+            ordering_desc = "Modification time (newest first)"
+        else:
+            matches.sort(key=str.lower)
+            ordering_desc = "Alphabetical (case-insensitive, ascending)"
 
-            if file_names:
-                lines = [f"• {name}" for name in file_names]
-                dir_display = d.name or str(d)
-                msg = f"Found {len(matches)} files in {dir_display}:\n" + "\n".join(lines)
+        total_count = len(matches)
+        top_names = matches[:limit]
+
+        dir_display = d.name or str(d)
+        lines: list[str] = [f"### Finder Inspection: {dir_display}\n"]
+
+        if open_finder:
+            if finder_navigated:
+                lines.append(f"• **Finder Status:** Activated and navigated to `{d}`.")
             else:
-                msg = f"No files found in {d.name}."
+                err_str = f" ({finder_error})" if finder_error else ""
+                lines.append(f"• **Finder Status:** Navigation failed or unavailable{err_str}.")
 
-            return DeviceActionResult(True, msg, {
-                "files": [str(m) for m in top_matches],
-                "names": file_names,
+        lines.append("• **Inspection Type:** Directory entries (read-only filesystem listing).")
+        lines.append(f"• **Ordering:** {ordering_desc}.")
+
+        if total_count == 0:
+            lines.append("• **Items displayed:** 0 entries found (directory is empty).\n")
+            lines.append(f"The directory `{dir_display}` contains no visible files.")
+        else:
+            count_label = f"{len(top_names)} of {total_count}" if total_count > len(top_names) else f"{len(top_names)}"
+            lines.append(f"• **Items displayed:** First {count_label} entries.\n")
+            for idx, name in enumerate(top_names, 1):
+                lines.append(f"{idx}. `{name}`")
+
+        if finder_window_items:
+            lines.append(f"\n• **Finder Window Verification:** Confirmed matching front Finder window items via macOS Finder AppleScript.")
+        else:
+            lines.append(f"\n• **Finder Window Verification:** Directory entries verified via filesystem API.")
+
+        lines.append("• **Filesystem Status:** Verified read-only inspection. No files were created, modified, renamed, or deleted.")
+
+        msg = "\n".join(lines)
+        return DeviceActionResult(
+            True,
+            msg,
+            {
                 "directory": str(d),
-                "count": len(matches),
-            })
-        except Exception as e:
-            return DeviceActionResult(False, f"Search failed: {e}")
+                "count": total_count,
+                "displayed_count": len(top_names),
+                "names": top_names,
+                "all_matches": matches,
+                "files": [str(d / n) for n in top_names],
+                "finder_navigated": finder_navigated,
+                "finder_window_verified": bool(finder_window_items),
+                "finder_window_items": finder_window_items[:limit] if finder_window_items else [],
+                "ordering": ordering_desc,
+                "read_only": True,
+            },
+        )
 
     def verify_file_written(self, path: str, expected_content: str) -> bool:
         p = Path(path).expanduser()

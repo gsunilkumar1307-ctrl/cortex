@@ -1055,13 +1055,34 @@ def command_from_intent(intent: str) -> TaskCommand:
         return TaskCommand.CLOSE_APP
     # ── File / Finder Listing & Inspection ──────────────────
     if (
-        any(phrase in text for phrase in (
+        re.search(
+            r"\b(?:open|launch)\s+finder\b.*?\b(?:navigate\s+to|go\s+to|open)\s+(?:downloads|documents|desktop|[a-z0-9_/~\.-]+)\b.*?\b(?:show|list|display|find|get)\b.*?\b(?:file|files|filename|filenames|items)\b",
+            text, re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:open|launch)\s+finder\b.*?\b(?:show|list|display|inspect)\b.*?\b(?:file|files|filename|filenames|items|contents)\b",
+            text, re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:navigate\s+to|go\s+to)\s+(?:downloads|documents|desktop|[a-z0-9_/~\.-]+)\b.*?\b(?:show|list|display)\b.*?\b(?:file|files|filename|filenames|items)\b",
+            text, re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:show|list|display)\s+(?:me\s+)?(?:the\s+)?(?:first\s+\w+\s+|top\s+\w+\s+)?(?:visible\s+)?(?:file|files|filename|filenames|items)\b.*?\b(?:in|from|of)\s+(?:downloads|documents|desktop|[a-z0-9_/~\.-]+|finder)\b",
+            text, re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:show|list)\s+(?:me\s+)?(?:the\s+)?(?:first\s+\w+\s+|top\s+\w+\s+)?(?:visible\s+)?(?:file|files|filename|filenames|items)\b",
+            text, re.IGNORECASE,
+        )
+        or any(phrase in text for phrase in (
             "open finder and list", "list files in", "list my files in", "show files in", "show me files in",
             "list files", "show files", "show me files", "files in downloads", "files in documents", "files in desktop",
             "files in finder", "list my downloads", "list downloads", "show my downloads", "show downloads",
             "what files are in", "view files in", "browse files in"
         ))
-        or (text.startswith("finder ") and "files" in text)
+        or (text.startswith("finder ") and any(w in text for w in ("files", "downloads", "documents", "desktop", "items")))
+        or ((any(w in text for w in ("ಫೈಂಡರ್", "ಡೌನ್‌ಲೋಡ್ಸ್", "ಡೌನ್‌ಲೋಡ್", "ಫೈಲ್‌ಗಳು", "ಫೈಲುಗಳು", "फाइलें", "फ़ाइलें", "दिखाएं", "ತೋರಿಸು")) and any(w in text for w in ("ತೋರಿಸು", "ಪಟ್ಟಿ", "दिखाओ", "दिखाएं", "सूची"))))
     ):
         return TaskCommand.SEARCH_FILES
 
