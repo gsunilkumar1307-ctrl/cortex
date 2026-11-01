@@ -3295,7 +3295,10 @@ class CortexOrchestrator:
         }
         is_greeting = (
             q_lower in greeting_words
-            or (any(q_lower.startswith(w) for w in ("hi ", "hello", "hey ", "greetings", "namaste", "namaskara", "vanakkam", "namaskaram")) and len(q_lower.split()) <= 4)
+            or (
+                any(q_lower.startswith(w) for w in ("hi", "hello", "hey", "greetings", "namaste", "namaskara", "vanakkam", "namaskaram"))
+                and (len(q_lower.split()) <= 4 or any(h in q_lower for h in ("help", "assist", "today", "there", "good morning", "good day", "everyone", "cortex")))
+            )
         )
         is_status = any(p in q_lower for p in (
             "how are you", "hegidira", "hegiddira", "hegidiya", "chennagidira",
@@ -3785,9 +3788,10 @@ class CortexOrchestrator:
                     title = "article"
 
             if not url:
-                task.status = TaskStatus.COMPLETED
-                task.result = "I couldn't find a recent article or link in our conversation context to open. Which URL or topic would you like me to open?"
-                task.add_event("completed", "Requested clarification on missing article reference.")
+                task.status = TaskStatus.FAILED
+                task.result = "No recent article or link found in our conversation context to open. Which URL or topic would you like me to open?"
+                task.error = task.result
+                task.add_event("failed", "No recent article or link found.")
                 return
 
             if not (url.startswith("http://") or url.startswith("https://")):

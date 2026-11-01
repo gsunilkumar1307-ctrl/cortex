@@ -1555,12 +1555,18 @@ class DeviceAutomation:
         is_broad = pat_clean in ("*", "", "all", "files", "list", "show files", "list files", "downloads", "my downloads", "finder")
 
         try:
-            with os.scandir(d) as it:
-                for entry in it:
-                    name = entry.name
-                    if not name.startswith("."):
-                        if is_broad or pat_clean in name.lower():
+            if is_broad:
+                with os.scandir(d) as it:
+                    for entry in it:
+                        name = entry.name
+                        if not name.startswith("."):
                             matches.append(name)
+            else:
+                for root, _, files in os.walk(str(d)):
+                    for f in files:
+                        if not f.startswith(".") and pat_clean in f.lower():
+                            rel_or_full = str(Path(root) / f) if root != str(d) else f
+                            matches.append(rel_or_full)
         except PermissionError:
             err_msg = f"Permission denied accessing directory: '{d}'. Ensure Cortex has permission to read this directory."
             return DeviceActionResult(
