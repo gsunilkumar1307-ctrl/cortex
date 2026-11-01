@@ -997,8 +997,10 @@ def command_from_intent(intent: str) -> TaskCommand:
     if (
         text.startswith(("open url ", "go to ", "visit ", "browse to ", "navigate to "))
         or (("http://" in text or "https://" in text or ".com" in text or ".org" in text) and "open " in text)
-        or re.search(r"\bopen\s+(?:that|the|this|my|a)?\s*(?:second|first|third|2nd|1st|3rd)?\s*(?:article|result|link|page|url|story|post)\s*(?:in\s+)?(?:safari|chrome|firefox|browser)?\b", text, re.IGNORECASE)
+        or re.search(r"\bopen\s+(?:that|the|this|my|a)?\s*(?:second|first|third|fourth|fifth|\d+(?:st|nd|rd|th)?)?\s*(?:article|result|link|page|url|story|post)\s*(?:in\s+)?(?:safari|chrome|firefox|browser)?\b", text, re.IGNORECASE)
         or re.search(r"\bopen\s+that\s+article\b", text, re.IGNORECASE)
+        or re.search(r"(?:ಆ|ಈ)?\s*(?:article|ಲೇಖನ|ಆರ್ಟಿಕಲ್|ಲಿಂಕ್)\s*(?:ಅನ್ನು\s*)?(?:ಓಪನ್\s*ಮಾಡು|ತೆರೆ)", text, re.IGNORECASE)
+        or re.search(r"(?:उस|यह|वो)?\s*(?:article|आर्टिकल|लेख|लिंक)\s*(?:को\s*)?(?:खोलो|खोलें|ओपन\s*करो)", text, re.IGNORECASE)
     ):
         return TaskCommand.OPEN_URL
     if text.startswith(("click on web ", "browser click ", "click link ", "click element ", "web click ")):
@@ -1065,14 +1067,15 @@ def command_from_intent(intent: str) -> TaskCommand:
 
     # ── Web Research / Safari Search ────────────────────────
     if (
-        # Compound: "open/launch [browser] and search/find/research/look up [query]"
+        # Compound: "open/launch [browser] and/to/, search/find/research/look up/inspect [query]"
         re.search(
-            r"\b(?:open|launch|start)\s+(?:safari|chrome|firefox|edge|browser)\s+"
-            r"and\s+(?:search\s+(?:the\s+web\s+)?(?:for\s+)?|look\s+up\s+|research\s+|find\s+|google\s+)",
+            r"\b(?:open|launch|start)\s+(?:safari|chrome|firefox|edge|browser)\b\s*[,;]?\s*"
+            r"(?:and\s+|to\s+)?(?:search\s+(?:the\s+web\s+)?(?:for\s+)?|look\s+up\s+|research\s+|find\s+|google\s+|inspect\s+)",
             text, re.IGNORECASE,
         )
-        or re.search(r"\b(?:search\s+for|research|look\s+up|google)\b.*\b(?:in\s+safari|using\s+safari|on\s+safari)\b", text)
-        or re.search(r"\bopen\s+safari\s+(?:and\s+|to\s+)(?:search\s+for|research|google|look\s+up)\b", text)
+        or re.search(r"\b(?:search\s+for|research|look\s+up|google)\b.*\b(?:in\s+safari|using\s+safari|on\s+safari)\b", text, re.IGNORECASE)
+        or re.search(r"\bopen\s+(?:safari|chrome|firefox|edge|browser)\s*[,;]?\s*(?:and\s+|to\s+)?(?:search\s+for|research|google|look\s+up|find|inspect)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:safari|browser|ಸಫಾರಿ|सफारी)\b.*(?:\bಹುಡುಕು\b|\bಸರ್ಚ್\b|\bಸಾರಾಂಶ\b|\bसर्च\b|\bखोजੋ\b|\bதேடு\b|\bవెతుకు\b)", text, re.IGNORECASE)
         or text.startswith("research ")
     ):
         return TaskCommand.WEB_SEARCH

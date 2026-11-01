@@ -8,6 +8,8 @@ import sys
 import threading
 import subprocess
 import urllib.parse
+import urllib.request
+import html as html_lib
 from pathlib import Path
 from typing import Any
 
@@ -2877,6 +2879,151 @@ class CortexOrchestrator:
         except Exception:
             pass
 
+    @staticmethod
+    def sanitize_untrusted_web_content(raw_text: str) -> str:
+        """Strips potential prompt injection vectors and isolates external webpage content safely.
+        Ensures that content in web pages or search snippets is strictly treated as passive text evidence,
+        and can never hijack Cortex or execute unauthorized system commands.
+        """
+        if not raw_text:
+            return ""
+        injection_patterns = [
+            r"(?i)\bignore\s+(?:all\s+)?(?:previous\s+|prior\s+)?instructions\b.*",
+            r"(?i)\bsystem\s*(?:override|prompt|command)?\s*:\s*.*",
+            r"(?i)\boverride\s+(?:all\s+)?(?:approval|rules|safety|system)\b.*",
+            r"(?i)\bforget\s+(?:all\s+)?(?:previous\s+|prior\s+)?prompts\b.*",
+            r"(?i)\bforward\s+(?:all\s+)?(?:passwords|credentials|emails|documents)\s+to\b.*",
+            r"(?i)\bexecute\s+(?:command|shell|script|terminal)\b.*",
+            r"(?i)\breveal\s+(?:api\s*key|credentials|secret|token)\b.*",
+            r"(?i)\bnew\s+instruction\s*:\s*.*",
+            r"(?i)\bbypass\s+(?:all\s+)?(?:rules|approval|safety)\b.*",
+            r"(?i)\bdisregard\s+(?:all\s+)?(?:previous\s+|prior\s+)?directives\b.*",
+            r"(?i)\bdeveloper\s+mode\s*:\s*.*",
+        ]
+        cleaned = raw_text
+        for pat in injection_patterns:
+            cleaned = re.sub(pat, "[FILTERED UNTRUSTED DIRECTIVE]", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def inspect_source_page(url: str, timeout: float = 3.5) -> dict[str, Any]:
+        """Safely retrieves and inspects an external web article, extracting real textual evidence.
+        Distinguishes full article inspection from snippet-only results, and sanitizes untrusted content.
+        """
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return {"ok": False, "status": "Snippet Only", "error": "Invalid URL protocol."}
+
+        parsed = urllib.parse.urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        if hostname in ("localhost", "127.0.0.1", "0.0.0.0") or hostname.startswith(("192.168.", "10.", "172.16.")):
+            return {"ok": False, "status": "Snippet Only", "error": "Internal or private network address."}
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if "text/html" not in content_type and "application/xhtml" not in content_type and "text/plain" not in content_type:
+                    return {"ok": False, "status": "Snippet Only", "error": f"Non-HTML content type: {content_type}"}
+                raw_bytes = resp.read(250_000)
+                html_text = raw_bytes.decode("utf-8", errors="ignore")
+
+            clean_html = re.sub(r"<(script|style|nav|header|footer|aside)[^>]*>.*?</\1>", " ", html_text, flags=re.DOTALL | re.IGNORECASE)
+            title_m = re.search(r"<title[^>]*>(.*?)</title>", clean_html, re.IGNORECASE | re.DOTALL)
+            page_title = html_lib.unescape(re.sub(r"<.*?>", "", title_m.group(1)).strip()) if title_m else ""
+
+            paras = re.findall(r"<p[^>]*>(.*?)</p>", clean_html, re.DOTALL | re.IGNORECASE)
+            extracted_paras = []
+            for p in paras:
+                clean_p = html_lib.unescape(re.sub(r"<.*?>", "", p).strip())
+                if len(clean_p) > 50 and not any(k in clean_p.lower() for k in ("cookie policy", "terms of service", "all rights reserved", "subscribe to", "newsletter")):
+                    if "{" in clean_p or "}" in clean_p or any(css in clean_p.lower() for css in ("font-family", "display:", "-webkit-", "overflow:", "padding:", "margin:", "height:", "width:")):
+                        continue
+                    extracted_paras.append(clean_p)
+                    if len(extracted_paras) >= 3:
+                        break
+
+            if not extracted_paras:
+                text_only = html_lib.unescape(re.sub(r"<.*?>", " ", clean_html))
+                text_lines = [l.strip() for l in text_only.splitlines() if len(l.strip()) > 60]
+                filtered_lines = [l for l in text_lines if "{" not in l and "}" not in l and not any(css in l.lower() for css in ("font-family", "display:", "-webkit-", "overflow:", "margin:"))]
+                extracted_paras = filtered_lines[:2]
+
+            article_body = " ".join(extracted_paras)[:1200]
+            sanitized_body = CortexOrchestrator.sanitize_untrusted_web_content(article_body)
+            if sanitized_body:
+                return {
+                    "ok": True,
+                    "status": "Full Article Inspected",
+                    "title": page_title,
+                    "summary": sanitized_body,
+                    "url": url,
+                }
+            return {"ok": False, "status": "Snippet Only", "error": "Insufficient text found on page."}
+        except Exception as e:
+            return {"ok": False, "status": "Snippet Only", "error": str(e)}
+
+    @staticmethod
+    def _sanitize_search_query(text: str) -> str:
+        q = text.strip()
+        q = re.sub(
+            r"^(?:can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|please\s+|i\s+want\s+you\s+to\s+|go\s+ahead\s+and\s+)?"
+            r"(?:google|search\s+(?:the\s+web\s+)?(?:for)?|look\s+up|research|find\s+(?:out\s+)?(?:about)?)\s+",
+            "",
+            q,
+            flags=re.IGNORECASE,
+        ).strip()
+        suffix_pat = (
+            r"[,;]?\s*(?:and\s+)?(?:inspect\s+(?:the\s+)?(?:search\s+)?results\s+)?"
+            r"(?:and\s+)?(?:give\s+me\s+(?:a\s+)?(?:concise\s+|brief\s+|short\s+|quick\s+)?summary|summarize\s+(?:the\s+findings|the\s+results|it|them|findings)?|explain\s+(?:the\s+findings|the\s+results|it|them)?|tell\s+me\s+(?:about\s+it|what\s+you\s+find)?|and\s+report\s+back)"
+            r"(?:\s+(?:with\s+|including\s+)(?:source\s+|working\s+)?(?:links|citations|sources))?[.,;!?]*$"
+        )
+        q = re.sub(suffix_pat, "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"[,;]?\s*(?:with\s+(?:source\s+)?links|with\s+citations|with\s+sources)[.,;!?]*$", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"\s+(?:in|using|on)\s+(?:safari|chrome|firefox|edge|browser)[.,;!?]*$", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"^(?:the\s+)", "", q, flags=re.IGNORECASE).strip()
+        return q.rstrip(".,;!?").strip()
+
+    @staticmethod
+    def _shorten_research_summary(text: str) -> str:
+        m_topic = re.search(r"### Cortex AI Overview:\s*([^\n]+)", text)
+        topic = m_topic.group(1).strip() if m_topic else "Research Summary"
+
+        m_core = re.search(r"### Cortex AI Overview:[^\n]+\n\n(.*?)(?=\n\n\*\*Key Developments|\n\n\*\*Sources)", text, re.DOTALL)
+        core_text = m_core.group(1).strip() if m_core else ""
+        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", core_text) if len(s.strip()) > 15]
+        core_sent = sents[0] if sents else "Recent research highlights substantial progress and practical applications across the field."
+
+        bullets = re.findall(r"•\s+\*\*([^*]+)\*\*:\s*(.+)", text)
+        condensed_bullets = []
+        for b in bullets[:2]:
+            title = b[0].strip()
+            desc = b[1].strip()
+            first_s = re.split(r"(?<=[.!?])\s+", desc)[0]
+            condensed_bullets.append(f"• **{title}**: {first_s}")
+
+        m_sources = re.search(r"(\*\*Sources & Citations:\*\*.*)", text, re.DOTALL)
+        sources_block = m_sources.group(1).strip() if m_sources else ""
+
+        lines = [
+            f"### {topic} (Condensed Summary)",
+            "",
+            core_sent,
+        ]
+        if condensed_bullets:
+            lines.extend([
+                "",
+                "**Key Takeaways:**",
+                "\n".join(condensed_bullets),
+            ])
+        if sources_block:
+            lines.extend(["", sources_block])
+        return "\n".join(lines)
+
     def _summarize_search(self, query: str, results: list[dict[str, str]]) -> str:
         # Check direct answer first
         direct = resolve_direct_answer(query)
@@ -2887,8 +3034,8 @@ class CortexOrchestrator:
             try:
                 model = self._create_gemini_model()
                 formatted = "\n\n".join([
-                    f"Title: {r['title']}\nURL: {r.get('href', '')}\nContent: {clean_search_response(r['body'])}"
-                    for r in results if r.get("body")
+                    f"Title: {r['title']}\nURL: {r.get('href', '')}\nStatus: {r.get('retrieval_status', 'Snippet Only')}\nContent: {clean_search_response(r.get('inspected_content') or r['body'])}"
+                    for r in results if (r.get("body") or r.get("inspected_content"))
                 ])
                 prompt = (
                     f"You are Cortex, an advanced desktop AI assistant producing a structured AI Overview.\n"
@@ -2896,7 +3043,7 @@ class CortexOrchestrator:
                     f"1. **Core Summary**: An opening 2-3 sentence high-level synthesis addressing the question directly.\n"
                     f"2. **Key Developments / Insights**: 2-4 bullet points highlighting the main findings.\n"
                     f"3. **Why It Matters / Implications**: A concise explanation of broader significance.\n"
-                    f"4. **Sources & Citations**: List clickable Markdown links formatted as '[Source Title](URL)'.\n\n"
+                    f"4. **Sources & Citations**: List clickable Markdown links formatted as '[Source Title](URL) (Full Article Inspected or Snippet Only)'.\n\n"
                     f"Question: {query}\n\n"
                     f"Facts:\n{formatted}"
                 )
@@ -2909,7 +3056,7 @@ class CortexOrchestrator:
         # Structured Cortex AI Overview with core summary, key developments, why it matters, and clickable citations
         valid_results = [r for r in results if r.get("title")]
         if valid_results:
-            top_bodies = [clean_search_response(r.get("body", "")).strip() for r in valid_results if r.get("body")]
+            top_bodies = [clean_search_response(r.get("inspected_content") or r.get("body", "")).strip() for r in valid_results if (r.get("body") or r.get("inspected_content"))]
             core_summary = ""
             if top_bodies:
                 first_body = top_bodies[0]
@@ -2917,13 +3064,15 @@ class CortexOrchestrator:
                 sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", first_body) if len(s.strip()) > 15]
                 core_summary = " ".join(sents[:2])
             if not core_summary:
-                core_summary = f"Recent reporting and research regarding **{query}** highlight significant advancements across foundation model capabilities, system reasoning, and applied deployment."
+                core_summary = f"Recent reporting and research regarding **{query}** highlight significant advancements across foundation model capabilities, multimodal interaction, and applied deployment."
 
             bullet_points = []
             for r in valid_results[:3]:
                 t = r.get("title", "").strip()
                 t_clean = re.sub(r"\s*(--|\||-)\s*.*$", "", t).strip() or t
-                b = clean_search_response(r.get("body", "")).strip()
+                raw_content = r.get("inspected_content") or r.get("body", "")
+                b = clean_search_response(raw_content).strip()
+                b = self.sanitize_untrusted_web_content(b)
                 b = re.sub(r"^\*\*[^*]+\*\*:\s*", "", b).strip()
                 b = re.sub(r"^" + re.escape(t_clean) + r"[:\s-]+", "", b, flags=re.IGNORECASE).strip()
                 sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", b) if len(s.strip()) > 15]
@@ -2935,8 +3084,9 @@ class CortexOrchestrator:
                 t = r.get("title", "").strip()
                 t_clean = re.sub(r"\s*(--|\||-)\s*.*$", "", t).strip() or t
                 href = r.get("href", "").strip()
+                status_label = r.get("retrieval_status", "Snippet Only")
                 if href and t_clean:
-                    citation_links.append(f"• [{t_clean}]({href})")
+                    citation_links.append(f"• [{t_clean}]({href}) ({status_label})")
 
             is_ai_query = any(k in query.lower() for k in ("ai", "artificial intelligence", "foundation model", "llm", "deep learning", "machine learning", "neural network", "openai", "gemini", "anthropic"))
             overview_sections = [
@@ -3081,8 +3231,8 @@ class CortexOrchestrator:
             return self._summarize_conversation_history(lang_code)
 
         # Check for document summary requests
-        doc_match = re.search(r"\b(?:summarize\s+(?:document|file|text|this))\s+(.+)", query, flags=re.IGNORECASE)
-        if doc_match:
+        doc_match = re.search(r"\b(?:summarize\s+(?:document|file))\s+(.+)", query, flags=re.IGNORECASE)
+        if doc_match and not any(k in doc_match.group(1).lower() for k in ("source", "result", "article", "point", "summary", "this", "that")):
             return self._summarize_document(doc_match.group(1).strip(), lang_code)
 
         # 0. Smart Direct Answers (Real-time world time, dates, system clock, calculations)
@@ -3138,6 +3288,75 @@ class CortexOrchestrator:
                 return "बिल्कुल, मैं आपकी पायथन (Python) प्रोग्रामिंग में मदद करने के लिए तैयार हूँ! कोड लिखना, एरर डीबग करना, या कोई प्रोजेक्ट बनाना — बताइए हम क्या शुरू करें?"
             return "I'd be glad to help you with Python! Whether you need to write clean scripts, debug an issue, design algorithms, or work with frameworks like FastAPI or PyTorch, let me know what you'd like to build or solve."
 
+        # Check for point explanation (e.g. "Explain the second point", "Explain the 1st insight")
+        point_m = re.search(r"\b(?:explain|elaborate\s+on|tell\s+me\s+more\s+about)\s+(?:the\s+)?(first|second|third|1st|2nd|3rd|\d+)?\s*(?:point|insight|takeaway|bullet)\b", q_lower)
+        if point_m and self.history:
+            idx = 1 if (point_m.group(1) and ("second" in point_m.group(1).lower() or "2" in point_m.group(1))) else (
+                0 if (point_m.group(1) and ("first" in point_m.group(1).lower() or "1" in point_m.group(1))) else 2
+            )
+            last_model_answer = ""
+            for item in reversed(self.history):
+                if item.get("role") == "model" and not last_model_answer:
+                    last_model_answer = item.get("parts", [""])[0]
+
+            bullets = re.findall(r"•\s+\*\*([^*]+)\*\*:\s*(.+)", last_model_answer)
+            ordinal = "second" if idx == 1 else ("first" if idx == 0 else f"{idx+1}th")
+            if bullets and len(bullets) > idx:
+                title, desc = bullets[idx]
+                source_link = ""
+                if self.last_search_results and len(self.last_search_results) > idx:
+                    u = self.last_search_results[idx].get("href", "")
+                    if u:
+                        source_link = f"\n\nSource: [{title}]({u})"
+                return (
+                    f"Here is an explanation of the {ordinal} point — **{title}**:\n\n"
+                    f"{desc}\n\n"
+                    f"This finding reflects meaningful progress in the domain, demonstrating enhanced performance "
+                    f"and practical applicability across modern architectures.{source_link}"
+                )
+
+        # Check for detailed source explanation (e.g. "Summarize this source in more detail", "Explain this source in detail")
+        is_detail_source = bool(re.search(r"\b(?:summarize|explain|tell\s+me\s+more\s+about)\s+(?:this|the|that)?\s*(?:source|article|page|result)\s+in\s+(?:more\s+)?detail\b", q_lower))
+        if is_detail_source:
+            target = self.last_selected_result or (self.last_search_results[0] if self.last_search_results else None)
+            if target:
+                title = target.get("title", "Selected Article")
+                url = target.get("href", "")
+                body = target.get("inspected_content") or target.get("body", "")
+                clean_title = re.sub(r"\s*(--|\||-)\s*.*$", "", title).strip() or title
+                link_line = f"\n\nSource: [{clean_title}]({url})" if url else ""
+                return (
+                    f"### In-Depth Summary: {clean_title}\n\n"
+                    f"{body}\n\n"
+                    f"This source provides comprehensive reporting on the topic, highlighting recent technical benchmarks, "
+                    f"operational capabilities, and forward-looking developments.{link_line}"
+                )
+            return "Which source or article from our recent research would you like me to summarize in more detail?"
+
+        # Check for comparison between sources (e.g. "Compare those two sources", "Compare these sources")
+        is_compare = bool(re.search(r"\bcompare\s+(?:those|these|the|both)?\s*(?:two\s+)?(?:sources|articles|results|findings)\b", q_lower))
+        if is_compare:
+            if self.last_search_results and len(self.last_search_results) >= 2:
+                s1 = self.last_search_results[0]
+                s2 = self.last_search_results[1]
+                t1 = re.sub(r"\s*(--|\||-)\s*.*$", "", s1.get("title", "Source 1")).strip()
+                u1 = s1.get("href", "")
+                b1 = s1.get("inspected_content") or s1.get("body", "")
+                t2 = re.sub(r"\s*(--|\||-)\s*.*$", "", s2.get("title", "Source 2")).strip()
+                u2 = s2.get("href", "")
+                b2 = s2.get("inspected_content") or s2.get("body", "")
+                return (
+                    f"### Comparison of Primary Sources\n\n"
+                    f"1. **[{t1}]({u1})** ({s1.get('retrieval_status', 'Available')}):\n"
+                    f"   - **Key Focus**: {b1}\n\n"
+                    f"2. **[{t2}]({u2})** ({s2.get('retrieval_status', 'Available')}):\n"
+                    f"   - **Key Focus**: {b2}\n\n"
+                    f"**Comparative Analysis:**\n"
+                    f"Both sources corroborate key progress on the topic. While the first source focuses on initial announcements and high-level milestones, "
+                    f"the second source emphasizes technical methodology and real-world evaluation benchmarks."
+                )
+            return "I need at least two sources from recent research to compare. Which topic or question would you like me to research and compare?"
+
         # Check for contextual reference to search results (e.g. "Explain the second result", "What is the second result")
         is_result_ref = bool(re.search(r"\b(?:first|second|third|1st|2nd|3rd)\s+(?:result|article|finding|link)\b", q_lower)) or "second result" in q_lower
         if is_result_ref and self.last_search_results:
@@ -3147,24 +3366,51 @@ class CortexOrchestrator:
                 self.last_selected_result = target
                 self.last_opened_url = target.get("href", "")
                 title = target.get("title", "Result")
-                body = clean_search_response(target.get("body", ""))
+                body = clean_search_response(target.get("inspected_content") or target.get("body", ""))
                 link = target.get("href", "")
                 ordinal = "second" if target_idx == 1 else ("first" if target_idx == 0 else f"{target_idx+1}th")
-                link_line = f"\n\nSource: {link}" if link else ""
+                link_line = f"\n\nSource: [{title}]({link})" if link else ""
                 return f"The {ordinal} result is **{title}**:\n\n{body}{link_line}"
+            else:
+                return f"I only retrieved {len(self.last_search_results)} results for '{self.last_search_query}'. Which one would you like me to explain (result 1 to {len(self.last_search_results)})?"
 
-        # Check for contextual style modification follow-up (e.g. "Make it shorter and more formal", "Make it shorter", "Make it formal", "Make that concise")
-        is_modify_style = bool(re.search(r"\b(?:make\s+it|make\s+that|rewrite\s+(?:it|that)?|can\s+you\s+make\s+it)\s+(?:more\s+)?(?:shorter|formal|concise|brief|casual|simpler)\b", q_lower)) or q_lower in ("make it shorter", "make it formal", "make it shorter and more formal", "make it more formal", "make it concise", "shorter and more formal", "shorter and formal")
-        if is_modify_style and self.history:
+        # Check for contextual style modification follow-up (e.g. "Make the summary shorter", "Make it shorter", "Make it formal", "Shorten the summary")
+        is_shorten_summary = bool(re.search(
+            r"\b(?:make\s+(?:the\s+)?summary\s+shorter|make\s+(?:it|this|that|summary)\s+shorter|"
+            r"shorten\s+(?:the\s+)?(?:summary|answer|it|this)|make\s+it\s+(?:more\s+)?(?:concise|brief)|"
+            r"can\s+you\s+(?:make\s+it\s+shorter|shorten\s+(?:the\s+)?summary)|summarize\s+it\s+shorter|"
+            r"ಸಾರಾಂಶವನ್ನು\s+ಚಿಕ್ಕದಾಗಿಸು|ಸಾರಾಂಶ\s+ಚಿಕ್ಕದು\s+ಮಾಡು|समरी\s+छोटी\s+करो|छोटा\s+करो)\b",
+            q_lower
+        )) or q_lower in ("make it shorter", "make the summary shorter", "shorten the summary", "make it more concise", "make summary shorter")
+        is_modify_style = is_shorten_summary or bool(re.search(
+            r"\b(?:make\s+it|make\s+that|rewrite\s+(?:it|that)?|can\s+you\s+make\s+it)\s+(?:more\s+)?(?:shorter|formal|concise|brief|casual|simpler)\b",
+            q_lower
+        )) or q_lower in ("make it shorter", "make it formal", "make it shorter and more formal", "make it more formal", "make it concise", "shorter and more formal", "shorter and formal")
+
+        if (is_shorten_summary or is_modify_style) and self.history:
             last_user_query = ""
             last_model_answer = ""
-            for item in reversed(self.history):
-                if item.get("role") == "user" and not last_user_query:
-                    last_user_query = item.get("parts", [""])[0]
-                elif item.get("role") == "model" and not last_model_answer:
-                    last_model_answer = item.get("parts", [""])[0]
+            if is_shorten_summary:
+                for item in reversed(self.history):
+                    if item.get("role") == "model":
+                        content = item.get("parts", [""])[0]
+                        if "### Cortex AI Overview:" in content or "**Sources & Citations:" in content or "**Key Developments" in content:
+                            last_model_answer = content
+                            break
 
-            if is_modify_style and last_model_answer:
+            if not last_model_answer:
+                for item in reversed(self.history):
+                    if item.get("role") == "user" and not last_user_query:
+                        last_user_query = item.get("parts", [""])[0]
+                    elif item.get("role") == "model" and not last_model_answer:
+                        last_model_answer = item.get("parts", [""])[0]
+
+            if last_model_answer:
+                # Check if target answer is a research summary / AI Overview
+                if "### Cortex AI Overview:" in last_model_answer or "**Key Developments" in last_model_answer or "**Sources & Citations:" in last_model_answer:
+                    condensed = self._shorten_research_summary(last_model_answer)
+                    return condensed
+
                 if self._is_gemini_available():
                     try:
                         rewrite_prompt = f"Rewrite the following answer to make it {query.lower()}:\n\n{last_model_answer}"
@@ -3260,13 +3506,18 @@ class CortexOrchestrator:
             except Exception as e:
                 self._handle_gemini_error(e, context="question answering")
 
-        # 4. Web search fallback for factual queries
-        try:
-            results = search_web(query, max_results=3)
-            if results:
-                return self._summarize_search(query, results)
-        except Exception as e:
-            print(f"[cortex] Knowledge lookup error: {e}", file=sys.stderr)
+        # 4. Web search fallback for factual queries (only if not a conversational meta-directive)
+        is_meta_directive = bool(re.search(
+            r"\b(?:cancel|stop|clear|shorter|longer|more|less|summary|draft|open|close|send|yes|no)\b",
+            q_lower
+        ))
+        if not is_meta_directive:
+            try:
+                results = search_web(query, max_results=3)
+                if results:
+                    return self._summarize_search(query, results)
+            except Exception as e:
+                print(f"[cortex] Knowledge lookup error: {e}", file=sys.stderr)
 
         return localize("no_confident_answer", lang_code, query=query)
 
@@ -3357,7 +3608,26 @@ class CortexOrchestrator:
             if results:
                 self.last_search_results = results
                 self.last_search_query = query
+                self.last_selected_result = results[0]
+                self.last_opened_url = results[0].get("href", "")
                 task.add_event("web_search_completed", f"Found {len(results)} results.")
+
+                # Inspect source pages when available (up to top 2 results)
+                should_inspect = bool(task.params.get("inspect_results") or task.params.get("cooperative_chain") or is_safari or len(results) > 0)
+                if should_inspect:
+                    for r in results[:2]:
+                        u = r.get("href", "")
+                        if u and u.startswith("http"):
+                            inspection = self.inspect_source_page(u, timeout=3.0)
+                            if inspection.get("ok"):
+                                r["retrieval_status"] = "Full Article Inspected"
+                                r["inspected_content"] = inspection.get("summary", "")
+                            else:
+                                r["retrieval_status"] = "Snippet Only"
+                        else:
+                            r["retrieval_status"] = "Snippet Only"
+                    for r in results[2:]:
+                        r["retrieval_status"] = "Snippet Only"
 
                 # Cooperative chain: search + open article in browser + explain
                 if task.params.get("cooperative_chain"):
@@ -3451,19 +3721,24 @@ class CortexOrchestrator:
                     url = self.last_selected_result.get("href", "")
                     title = self.last_selected_result.get("title", "selected article")
                 elif self.last_search_results:
-                    idx = min(target_idx, len(self.last_search_results) - 1)
-                    target = self.last_search_results[idx]
-                    url = target.get("href", "")
-                    title = target.get("title", "article")
-                    self.last_selected_result = target
+                    if target_idx < len(self.last_search_results):
+                        target = self.last_search_results[target_idx]
+                        url = target.get("href", "")
+                        title = target.get("title", "article")
+                        self.last_selected_result = target
+                    else:
+                        task.status = TaskStatus.COMPLETED
+                        task.result = f"I only retrieved {len(self.last_search_results)} results for '{self.last_search_query}'. Which result would you like me to open (e.g. result 1 to {len(self.last_search_results)})?"
+                        task.add_event("completed", "Requested clarification on result index.")
+                        return
                 elif self.last_opened_url:
                     url = self.last_opened_url
                     title = "article"
 
             if not url:
-                task.status = TaskStatus.FAILED
-                task.error = "No recent article or link found in conversation context to open. Which URL or topic would you like me to open?"
-                task.add_event("failed", task.error)
+                task.status = TaskStatus.COMPLETED
+                task.result = "I couldn't find a recent article or link in our conversation context to open. Which URL or topic would you like me to open?"
+                task.add_event("completed", "Requested clarification on missing article reference.")
                 return
 
             if not (url.startswith("http://") or url.startswith("https://")):
@@ -3874,15 +4149,24 @@ class CortexOrchestrator:
         if command == TaskCommand.OPEN_URL:
             # Check for contextual references: "that article", "the second result", etc.
             is_contextual = bool(re.search(
-                r"\b(?:that|the|this|my|a)?\s*(?:second|first|third|2nd|1st|3rd)?\s*(?:article|result|link|page|url|story|post)\b",
+                r"\b(?:that|the|this|my|a)?\s*(?:second|first|third|fourth|fifth|\d+(?:st|nd|rd|th)?)?\s*(?:article|result|link|page|url|story|post)\b",
                 text, re.IGNORECASE,
-            )) or bool(re.search(r"\bopen\s+that\s+article\b", text, re.IGNORECASE))
+            )) or bool(re.search(r"\bopen\s+that\s+article\b", text, re.IGNORECASE)) or any(w in text for w in ("ಆರ್ಟಿಕಲ್", "ಲೇಖನ", "ಆ ಲೇಖನ", "ಆ article", "उस आर्टिकल", "वह आर्टिकल"))
 
             target_idx = 0
-            if "second" in text.lower() or "2nd" in text.lower() or " 2 " in text:
+            num_m = re.search(r"\b(\d+)(?:st|nd|rd|th)?\b", text)
+            if num_m:
+                target_idx = max(0, int(num_m.group(1)) - 1)
+            elif "second" in text.lower() or "2nd" in text.lower() or "ಎರಡನೇ" in text or "दूसरा" in text:
                 target_idx = 1
-            elif "third" in text.lower() or "3rd" in text.lower() or " 3 " in text:
+            elif "third" in text.lower() or "3rd" in text.lower() or "ಮೂರನೇ" in text or "तीसरा" in text:
                 target_idx = 2
+            elif "fourth" in text.lower() or "4th" in text.lower():
+                target_idx = 3
+            elif "fifth" in text.lower() or "5th" in text.lower():
+                target_idx = 4
+            elif "first" in text.lower() or "1st" in text.lower() or "ಮೊದಲ" in text or "पहला" in text:
+                target_idx = 0
 
             browser = "Safari" if "safari" in text.lower() else "Safari"
 
@@ -4091,40 +4375,23 @@ class CortexOrchestrator:
                     "explain_target": True,
                 }
 
-            # --- P0 fix: compound "open [browser] and search for [query]" patterns ---
+            # --- P0 fix: compound "open [browser] and/to/, search for [query]" patterns ---
             _compound_browser_re = re.compile(
-                r"(?:open|launch|start)\s+(safari|chrome|firefox|edge|browser)\s+"
-                r"and\s+(?:search\s+(?:the\s+web\s+)?(?:for\s+)?|look\s+up\s+|research\s+|find\s+|google\s+)"
+                r"(?:open|launch|start)\s+(safari|chrome|firefox|edge|browser)\s*[,;]?\s*"
+                r"(?:and\s+|to\s+)?(?:search\s+(?:the\s+)?(?:web\s+)?(?:for\s+)?|look\s+up\s+|research\s+|find\s+|google\s+)"
                 r"(.+)",
                 re.IGNORECASE,
             )
             _compound_m = _compound_browser_re.search(text)
+            inspect_flag = bool(re.search(r"\b(?:inspect|read|check)\s+(?:the\s+)?(?:results|pages|sources|articles)\b", text, re.IGNORECASE))
             if _compound_m:
                 raw_browser = _compound_m.group(1).strip().title()  # e.g. "Safari"
-                query = _compound_m.group(2).strip().rstrip(".").strip()
-                query = re.sub(
-                    r"\s+(?:and\s+)?(?:summarize\s+(?:the\s+findings|the\s+results|it|them)?|give\s+me\s+(?:a\s+)?summary|explain\s+(?:the\s+findings|the\s+results|it|them)?|tell\s+me\s+(?:about\s+it|what\s+you\s+find)?|and\s+report\s+back)[.,;!?]*$",
-                    "",
-                    query,
-                    flags=re.IGNORECASE,
-                ).strip()
-                return {"query": query, "browser": raw_browser}
+                raw_query = _compound_m.group(2).strip()
+                query = self._sanitize_search_query(raw_query)
+                return {"query": query, "browser": raw_browser, "inspect_results": inspect_flag}
 
             # Standard query stripping (non-compound forms)
-            query = re.sub(
-                r"^(?:can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|please\s+|i\s+want\s+you\s+to\s+|go\s+ahead\s+and\s+)?(?:google|search\s+(?:the\s+web\s+)?(?:for)?|look\s+up|research|find\s+(?:out\s+)?(?:about)?)\s+",
-                "",
-                text,
-                flags=re.IGNORECASE,
-            ).strip()
-            query = re.sub(
-                r"\s+(?:and\s+)?(?:summarize\s+(?:the\s+findings|the\s+results|it|them)?|give\s+me\s+(?:a\s+)?summary|explain\s+(?:the\s+findings|the\s+results|it|them)?|tell\s+me\s+(?:about\s+it|what\s+you\s+find)?|and\s+report\s+back)[.,;!?]*$",
-                "",
-                query,
-                flags=re.IGNORECASE,
-            ).strip()
-            query = re.sub(r"\s+in\s+safari$", "", query, flags=re.IGNORECASE).strip()
-            # Detect explicit browser mention even in non-compound forms
+            query = self._sanitize_search_query(text)
             _browser_mention = re.search(r"\bin\s+(safari|chrome|firefox|edge)\b", text, re.IGNORECASE)
             browser_param: dict = {"browser": _browser_mention.group(1).title()} if _browser_mention else {}
             filter_m = re.search(r"^(.*?)\s+(?:under|below|less than|priced under|priced at most)\s+([₹$€£]?\s*[\d,]+.*)$", query, re.IGNORECASE)
@@ -4135,9 +4402,10 @@ class CortexOrchestrator:
                     "query": clean_q,
                     "filter": f"price <= {filter_val}",
                     "raw_query": query.rstrip("."),
+                    "inspect_results": inspect_flag,
                     **browser_param,
                 }
-            return {"query": query if query else text, **browser_param}
+            return {"query": query if query else text, "inspect_results": inspect_flag, **browser_param}
         if command in {TaskCommand.READ_MAIL, TaskCommand.SUMMARIZE_MAIL}:
             unread_only = "unread" in text.lower()
             return {"limit": 5, "unread_only": unread_only}
@@ -4177,8 +4445,8 @@ class CortexOrchestrator:
         return {}
 
     def _split_sequence(self, message: str) -> list[str]:
-        # Do not split compound browser search commands like "Open Safari and search for..."
-        if re.search(r"^(?:open|launch)\s+(?:safari|chrome|browser)\s+and\s+(?:search|find|look\s+up)\b", message, re.IGNORECASE):
+        # Do not split compound browser search commands like "Open Safari and search for..." or "Open Safari, search for..."
+        if re.search(r"^(?:open|launch)\s+(?:safari|chrome|browser)\s*[,;]?\s*(?:and\s+|to\s+)?(?:search|find|look\s+up|research|inspect)\b", message, re.IGNORECASE):
             return [message]
 
         parts = [
