@@ -3375,22 +3375,27 @@ class CortexOrchestrator:
                 return f"I only retrieved {len(self.last_search_results)} results for '{self.last_search_query}'. Which one would you like me to explain (result 1 to {len(self.last_search_results)})?"
 
         # Check for contextual style modification follow-up (e.g. "Make the summary shorter", "Make it shorter", "Make it formal", "Shorten the summary")
-        is_shorten_summary = bool(re.search(
-            r"\b(?:make\s+(?:the\s+)?summary\s+shorter|make\s+(?:it|this|that|summary)\s+shorter|"
-            r"shorten\s+(?:the\s+)?(?:summary|answer|it|this)|make\s+it\s+(?:more\s+)?(?:concise|brief)|"
-            r"can\s+you\s+(?:make\s+it\s+shorter|shorten\s+(?:the\s+)?summary)|summarize\s+it\s+shorter|"
-            r"ಸಾರಾಂಶವನ್ನು\s+ಚಿಕ್ಕದಾಗಿಸು|ಸಾರಾಂಶ\s+ಚಿಕ್ಕದು\s+ಮಾಡು|समरी\s+छोटी\s+करो|छोटा\s+करो)\b",
+        is_explicit_summary_shorten = bool(re.search(
+            r"\b(?:make\s+(?:the\s+)?summary\s+shorter|shorten\s+(?:the\s+)?summary|"
+            r"can\s+you\s+(?:shorten\s+(?:the\s+)?summary)|"
+            r"ಸಾರಾಂಶವನ್ನು\s+ಚಿಕ್ಕದಾಗಿಸು|ಸಾರಾಂಶ\s+ಚಿಕ್ಕದು\s+ಮಾಡು|समरी\s+छोटी\s+करो)\b",
             q_lower
-        )) or q_lower in ("make it shorter", "make the summary shorter", "shorten the summary", "make it more concise", "make summary shorter")
-        is_modify_style = is_shorten_summary or bool(re.search(
+        )) or q_lower in ("make the summary shorter", "shorten the summary", "make summary shorter")
+
+        is_shorten = bool(re.search(
+            r"\b(?:make\s+(?:it|this|that)\s+shorter|shorten\s+(?:it|this|that|answer)|make\s+it\s+(?:more\s+)?(?:concise|brief)|summarize\s+it\s+shorter|छोटा\s+करो)\b",
+            q_lower
+        )) or q_lower in ("make it shorter", "make it more concise")
+
+        is_modify_style = is_explicit_summary_shorten or is_shorten or bool(re.search(
             r"\b(?:make\s+it|make\s+that|rewrite\s+(?:it|that)?|can\s+you\s+make\s+it)\s+(?:more\s+)?(?:shorter|formal|concise|brief|casual|simpler)\b",
             q_lower
         )) or q_lower in ("make it shorter", "make it formal", "make it shorter and more formal", "make it more formal", "make it concise", "shorter and more formal", "shorter and formal")
 
-        if (is_shorten_summary or is_modify_style) and self.history:
+        if (is_explicit_summary_shorten or is_shorten or is_modify_style) and self.history:
             last_user_query = ""
             last_model_answer = ""
-            if is_shorten_summary:
+            if is_explicit_summary_shorten:
                 for item in reversed(self.history):
                     if item.get("role") == "model":
                         content = item.get("parts", [""])[0]
@@ -3407,7 +3412,9 @@ class CortexOrchestrator:
 
             if last_model_answer:
                 # Check if target answer is a research summary / AI Overview
-                if "### Cortex AI Overview:" in last_model_answer or "**Key Developments" in last_model_answer or "**Sources & Citations:" in last_model_answer:
+                if (is_explicit_summary_shorten or (is_shorten and "formal" not in q_lower)) and (
+                    "### Cortex AI Overview:" in last_model_answer or "**Key Developments" in last_model_answer or "**Sources & Citations:" in last_model_answer
+                ):
                     condensed = self._shorten_research_summary(last_model_answer)
                     return condensed
 
