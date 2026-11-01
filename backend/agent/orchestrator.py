@@ -665,6 +665,10 @@ class CortexOrchestrator:
         if "?" in text and not msg_lower.startswith(("cancel", "stop", "abort", "discard", "ರದ್ದು", "ಬೇಡ", "रद्द", "रोक")):
             return False
 
+        # Creation/preparation of a new message/draft/app action is never a cancellation request
+        if re.match(r"^(?:draft\b|compose\b|write\b|prepare\b|open\s+(?:whatsapp|mail|safari|notes|finder)|show\s+(?:documents|downloads|desktop|finder))", msg_lower):
+            return False
+
         exact_cancels = {
             "cancel", "cancel it", "cancel that", "cancel this", "cancel draft", "cancel the draft",
             "cancel email", "cancel the email", "cancel task", "please cancel", "cancel please",
@@ -692,8 +696,10 @@ class CortexOrchestrator:
             return True
 
         cancel_patterns = [
-            r"^(?:no[,\s]+)?(?:please\s+)?(?:cancel|abort|discard|stop)(?:\s+(?:the\s+|this\s+|that\s+|my\s+)?(?:draft|email|mail|task|action|it|that))?$",
+            r"^(?:no[,\s]+)?(?:please\s+)?(?:cancel|abort|discard|stop)(?:\s+(?:the\s+|this\s+|that\s+|my\s+)?(?:draft|email|mail|task|action|it|that|everything))?.*$",
             r"^(?:no[,\s]+)?(?:please\s+)?(?:don'?t|do\s+not|never)\s+send(?:\s+(?:the\s+|this\s+)?(?:draft|email|mail|it|that|anything))?.*$",
+            r"\b(?:cancel|abort|discard)\s+(?:the\s+|this\s+|my\s+)?(?:draft|email|mail|task|action)\b",
+            r"^(?:please\s+)?(?:do\s+not|don'?t|never)\s+send\s+(?:anything|it|the\s+draft|the\s+email|this)\b",
             r"^(?:ರದ್ದು\s*(?:ಮಾಡು|ಮಾಡಿ)?|ಬೇಡ)$",
             r"(?:ಇದನ್ನು\s*|ಇಮೇಲ್\s*)?(?:ಕಳುಹಿಸಬೇಡ|ಕಳಿಸಬೇಡ)$",
             r"^(?:रद्द\s*(?:करो|करें|कर\s*दो)?|मत\s*भेजो)$",
@@ -847,22 +853,29 @@ class CortexOrchestrator:
 
             elif pending.get("type") == "email_draft" and step == "confirm_send":
                 is_show_draft = any(kw in msg_lower for kw in ("show me", "show draft", "view draft", "complete draft", "see draft", "display draft", "read draft"))
-                is_edit = any(kw in msg_lower for kw in (
-                    "shorter", "concise", "formal", "casual", "brief", "subject", "reason",
-                    "before", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday",
-                    "deadline", "urgent", "professor", "prof", "dr", "dear", "address", "account",
-                    "college email", "work email", "add", "remove", "change", "include", "mention",
-                    "make it", "update", "rewrite", "replace", "warm regards", "sincerely", "regards",
-                    "kannada", "hindi", "tamil", "telugu", "english", "translate", "write it in", "write in",
-                    "keep the", "ಕನ್ನಡ", "ಕನ್ನಡದಲ್ಲಿ", "हिंदी", "हिंदी में", "தமிழ்", "தமிழில்", "తెలుగు", "తెలుగులో",
-                )) or ("don't mention" in msg_lower or "dont mention" in msg_lower or "omit the reason" in msg_lower)
                 has_negation = (
-                    bool(re.search(r"\b(?:don'?t|do\s+not|never|stop|cancel|reject|abort|discard)\b", msg_lower))
+                    self._is_explicit_cancellation(message, in_pending=True)
+                    or bool(re.search(r"\b(?:cancel|abort|discard|stop|reject)\b", msg_lower))
+                    or (bool(re.search(r"\b(?:don'?t|do\s+not|never)\s+send\b", msg_lower)) and not any(w in msg_lower for w in ("don't mention", "dont mention", "do not mention")))
                     or msg_lower in ("no", "n", "nope", "nahi", "nahi bhejna", "नहीं")
-                    or any(kw in msg_lower for kw in ("ಬೇಡ", "ಕಳಿಸಬೇಡ", "ಕಳುಹಿಸಬೇಡ", "मत", "नहीं", "வேண்டாம்", "அனுப்பாதே", "వద్దు", "పంపవద్దు", "పంపకండి"))
+                    or any(kw in msg_lower for kw in ("ಬೇಡ", "ಕಳಿಸಬೇಡ", "ಕಳುಹಿಸಬೇಡ", "मत भेजो", "नहीं भेजना", "வேண்டாம்", "அனுப்பாதே", "వద్దు", "పంపవద్దు", "పంపకండి"))
                 )
-                if has_negation and not is_edit:
+                if has_negation:
                     return self._handle_cancellation(message, raw_lang_code, detected_lang)
+
+                edit_patterns = (
+                    r"\b(?:shorter|concise|formal|casual|brief|subject|reason)\b",
+                    r"\b(?:before|friday|monday|tuesday|wednesday|thursday|saturday|sunday)\b",
+                    r"\b(?:deadline|urgent|professor|prof|dear|address|account)\b",
+                    r"\b(?:college\s+email|work\s+email|add|remove|change|include|mention)\b",
+                    r"\b(?:make\s+it|update|rewrite|replace|warm\s+regards|sincerely|regards)\b",
+                    r"\b(?:kannada|hindi|tamil|telugu|english|translate|write\s+it\s+in|write\s+in)\b",
+                    r"\b(?:keep\s+the|ಕನ್ನಡ|ಕನ್ನಡದಲ್ಲಿ|हिंदी|हिंदी\s+में|தமிழ்|தமிழில்|తెలుగు|తెలుగులో)\b",
+                    r"\bdr\.?\s+[a-z]",
+                )
+                is_edit = any(re.search(pat, msg_lower) for pat in edit_patterns) or (
+                    "don't mention" in msg_lower or "dont mention" in msg_lower or "omit the reason" in msg_lower
+                )
 
                 is_confirm = (
                     not is_edit
@@ -1442,6 +1455,7 @@ class CortexOrchestrator:
                         "channel": "whatsapp",
                         "lang": p_lang,
                     }
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     return {"task": task.to_dict(), "message": format_whatsapp_approval_card(draft, lang_code=p_lang)}
@@ -1516,6 +1530,7 @@ class CortexOrchestrator:
                         "channel": "whatsapp",
                         "lang": p_lang,
                     }
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     return {"task": task.to_dict(), "message": format_whatsapp_approval_card(draft, lang_code=p_lang)}
@@ -1591,6 +1606,7 @@ class CortexOrchestrator:
                         "channel": "whatsapp",
                         "lang": p_lang,
                     }
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     return {"task": task.to_dict(), "message": localize("need_message_body", p_lang, recipient=rec_name)}
@@ -1841,6 +1857,7 @@ class CortexOrchestrator:
                 if resolution.status == "need_clarification":
                     task.status = TaskStatus.NEED_INFO
                     task.add_event("need_info", f"Awaiting recipient clarification: {resolution.clarification_prompt}")
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     self.pending_action = {
@@ -1859,6 +1876,7 @@ class CortexOrchestrator:
                 elif resolution.status == "multiple_candidates":
                     task.status = TaskStatus.NEED_INFO
                     task.add_event("need_info", f"Awaiting recipient disambiguation: {resolution.clarification_prompt}")
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     self.pending_action = {
@@ -2142,6 +2160,7 @@ class CortexOrchestrator:
                 if is_ambiguous_email_intent(raw_body):
                     task.status = TaskStatus.NEED_INFO
                     task.add_event("need_info", f"Awaiting clarification for ambiguous intent: '{raw_body}'")
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     self.pending_action = {
@@ -2178,6 +2197,7 @@ class CortexOrchestrator:
                     task.status = TaskStatus.FAILED
                     task.error = f"Security policy violation: attaching sensitive system or credential file '{blocked_att}' is blocked."
                     task.add_event("failed", task.error)
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     return {
@@ -2189,6 +2209,7 @@ class CortexOrchestrator:
                     task.status = TaskStatus.FAILED
                     task.error = f"Attachment file not found: {missing_att}"
                     task.add_event("failed", task.error)
+                    task.state_version += 1
                     self.tasks[task.id] = task
                     self._persist_task(task)
                     return {
@@ -2376,7 +2397,18 @@ class CortexOrchestrator:
             elif task.status in (TaskStatus.NEED_INFO, "need_info"):
                 response = task.error or "Additional information needed."
             else:
-                response = task.result or localize("action_done", raw_lang_code)
+                if not task.result:
+                    if task.command == TaskCommand.OPEN_APP:
+                        app_target = task.params.get("appName", "Application")
+                        task.result = f"Opened {app_target} successfully."
+                    elif task.command == TaskCommand.CLOSE_APP:
+                        app_target = task.params.get("appName", "Application")
+                        task.result = f"Closed {app_target} successfully."
+                    elif task.command == TaskCommand.WEB_SEARCH:
+                        task.result = f"Web search completed for '{task.params.get('query', '')}'."
+                    else:
+                        task.result = localize("action_done", raw_lang_code)
+                response = task.result
 
         # Update conversation history on success (only for conversational turns, avoiding operator clutter)
         if risk != RiskLevel.BLOCKED and not approval and command not in (
@@ -2906,11 +2938,13 @@ class CortexOrchestrator:
                 if href and t_clean:
                     citation_links.append(f"• [{t_clean}]({href})")
 
+            is_ai_query = any(k in query.lower() for k in ("ai", "artificial intelligence", "foundation model", "llm", "deep learning", "machine learning", "neural network", "openai", "gemini", "anthropic"))
             overview_sections = [
                 f"### Cortex AI Overview: {query.title()}\n\n{core_summary}\n",
                 "**Key Developments & Insights:**\n" + "\n".join(bullet_points),
-                "\n**Why It Matters:**\nThese advancements accelerate capabilities across foundation models, developer tooling, and multimodal real-time interaction.",
             ]
+            if is_ai_query:
+                overview_sections.append("\n**Why It Matters:**\nThese advancements accelerate capabilities across foundation models, developer tooling, and multimodal real-time interaction.")
             if citation_links:
                 overview_sections.append("\n**Sources & Citations:**\n" + "\n".join(citation_links))
 
@@ -3118,6 +3152,34 @@ class CortexOrchestrator:
                 ordinal = "second" if target_idx == 1 else ("first" if target_idx == 0 else f"{target_idx+1}th")
                 link_line = f"\n\nSource: {link}" if link else ""
                 return f"The {ordinal} result is **{title}**:\n\n{body}{link_line}"
+
+        # Check for contextual style modification follow-up (e.g. "Make it shorter and more formal", "Make it shorter", "Make it formal", "Make that concise")
+        is_modify_style = bool(re.search(r"\b(?:make\s+it|make\s+that|rewrite\s+(?:it|that)?|can\s+you\s+make\s+it)\s+(?:more\s+)?(?:shorter|formal|concise|brief|casual|simpler)\b", q_lower)) or q_lower in ("make it shorter", "make it formal", "make it shorter and more formal", "make it more formal", "make it concise", "shorter and more formal", "shorter and formal")
+        if is_modify_style and self.history:
+            last_user_query = ""
+            last_model_answer = ""
+            for item in reversed(self.history):
+                if item.get("role") == "user" and not last_user_query:
+                    last_user_query = item.get("parts", [""])[0]
+                elif item.get("role") == "model" and not last_model_answer:
+                    last_model_answer = item.get("parts", [""])[0]
+
+            if is_modify_style and last_model_answer:
+                if self._is_gemini_available():
+                    try:
+                        rewrite_prompt = f"Rewrite the following answer to make it {query.lower()}:\n\n{last_model_answer}"
+                        model = self._create_gemini_model()
+                        resp = model.generate_content(rewrite_prompt, request_options={"timeout": 15.0})
+                        if resp and resp.text:
+                            return resp.text.strip()
+                    except Exception:
+                        pass
+                sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", last_model_answer) if s.strip() and len(s.strip()) > 10]
+                shortened = " ".join(sents[:2]) if len(sents) >= 2 else last_model_answer
+                if "formal" in q_lower:
+                    return f"In formal terms: {shortened}"
+                else:
+                    return f"In brief: {shortened}"
 
         # Check for contextual simplification follow-up (e.g. "Explain that in simpler words", "Simplify that")
         is_simplify = bool(re.search(r"\b(?:simpler|simple words|simplify|eli5|easier|layman|simple terms)\b", q_lower))
@@ -3599,6 +3661,10 @@ class CortexOrchestrator:
         if prefix_match:
             text = prefix_match.group(1).strip()
         if command in {TaskCommand.OPEN_APP, TaskCommand.CLOSE_APP, TaskCommand.FOCUS_APP}:
+            if "finder" in text.lower():
+                folder_m = re.search(r"(?:show|open|reveal|view)\s+(?:the\s+)?([a-z0-9_/~\s-]+?)\s+(?:in\s+finder|folder\s+in\s+finder)", text, re.IGNORECASE)
+                folder = folder_m.group(1).strip() if folder_m else ""
+                return {"appName": "Finder", "folder": folder}
             match = re.search(r"(?:open|launch|start|close|quit|exit)\s+(.+)", text, re.IGNORECASE)
             if command == TaskCommand.FOCUS_APP:
                 match = re.search(r"(?:focus|switch to|bring up|activate)\s+(.+)", text, re.IGNORECASE)
@@ -3903,29 +3969,29 @@ class CortexOrchestrator:
                 "ఇమెయిల్ పంపు", "ఇమెయిల్ పంపించు", "మెయిల్ పంపు", "ఈమెయిల్ పంపు",
             }
             clean_cmd = text.strip().rstrip(".! ")
-            if clean_cmd.lower() in mail_triggers:
+            if clean_cmd.lower() in mail_triggers or re.match(r"^(?:ಕನ್ನಡದಲ್ಲಿ|हिंदी\s*में|தமிழில்|తెలుగులో|in\s+english|in\s+kannada|in\s+hindi)\s*(?:ಇಮೇಲ್|ಮೇಲ್|ईमेल|मेल|மின்னஞ்சல்|மெயில்|ఇమెయిల్|ఈమెయిల్|email|mail)?\s*(?:ಕಳುಹಿಸು|ಕಳಿಸು|ಮಾಡು|ಬರೆ|भेजो|भेजें|करो|लिखो|அனுப்பு|பம்பு|పంపండి)?$", clean_cmd.lower()):
                 return {"recipient": "", "subject": "", "body": ""}
 
             # Indic recipient and content patterns:
             # 1. Hindi: recipient को ... ईमेल भेजो कि body / recipient को ईमेल भेजो कि body
             hi_m = re.search(r"(.+?)\s*को\s*(?:ईमेल|मेल)\s*(?:भेजो|भेजें|करो|लिखो)(?:\s*(?:कि|की|के\s*लिए)\s*(.+))?", clean_cmd)
-            if hi_m and hi_m.group(2):
-                return {"recipient": hi_m.group(1).strip(), "subject": "", "body": hi_m.group(2).strip()}
-            hi_m2 = re.search(r"(.+?)\s*को\s*(.+?)\s*(?:के\s*बारे\s*में|के\s*लिए)?\s*(?:ईमेल|मेल)\s*(?:भेजो|भेजें|करो|लिखो)", clean_cmd)
+            if hi_m:
+                rec = hi_m.group(1).strip()
+                body = (hi_m.group(2) or "").strip()
+                return {"recipient": rec, "subject": "", "body": body}
+            hi_m2 = re.search(r"(.+?)\s*को\s*(.+?)\s*(?:के\s*बारे\s*में|के\s*लिए)\s*(?:ईमेल|मेल)\s*(?:भेजो|भेजें|करो|लिखो)", clean_cmd)
             if hi_m2:
                 return {"recipient": hi_m2.group(1).strip(), "subject": "", "body": hi_m2.group(2).strip()}
-            if hi_m:
-                return {"recipient": hi_m.group(1).strip(), "subject": "", "body": ""}
 
             # 2. Kannada: recipient ಗೆ ... ಎಂದು/ಬಗ್ಗೆ ಇಮೇಲ್ ಕಳುಹಿಸು or recipient ಗೆ ಇಮೇಲ್ ಕಳುಹಿಸು ... ಎಂದು/ಬಗ್ಗೆ
-            kn_m = re.search(r"(.+?)(?:ಗೆ|ರಿಗೆ)\s*(?:ಇಮೇಲ್|ಮೇಲ್)\s*(?:ಕಳುಹಿಸು|ಕಳುಹಿಸಿ|ಮಾಡು|ಬರೆ)(?:\s*(?:ಎಂದು|ಬಗ್ಗೆ)\s*(.+))?", clean_cmd)
-            if kn_m and kn_m.group(2):
-                return {"recipient": kn_m.group(1).strip(), "subject": "", "body": kn_m.group(2).strip()}
-            kn_m2 = re.search(r"(.+?)(?:ಗೆ|ರಿಗೆ)\s*(.+?)\s*(?:ಎಂದು|ಬಗ್ಗೆ)?\s*(?:ಇಮೇಲ್|ಮೇಲ್)\s*(?:ಕಳುಹಿಸು|ಕಳುಹಿಸಿ|ಮಾಡು|ಬರೆ)", clean_cmd)
-            if kn_m2:
-                return {"recipient": kn_m2.group(1).strip(), "subject": "", "body": kn_m2.group(2).strip()}
+            kn_m = re.search(r"(.+?)(?:ಗೆ|ರಿಗೆ)\s*(?:ಇಮೇಲ್|ಮೇಲ್)\s*(?:ಕಳುಹಿಸು|ಕಳುಹಿಸಿ|ಮಾಡು|ಬರೆ)(?:\s*(?:ಎಂದು|ಬಗ್ಗೆ|ಅಂತ)\s*(.+))?", clean_cmd)
             if kn_m:
-                return {"recipient": kn_m.group(1).strip(), "subject": "", "body": ""}
+                rec = kn_m.group(1).strip().rstrip("\u200c")
+                body = (kn_m.group(2) or "").strip()
+                return {"recipient": rec, "subject": "", "body": body}
+            kn_m2 = re.search(r"(.+?)(?:ಗೆ|ರಿಗೆ)\s*(.+?)\s*(?:ಎಂದು|ಬಗ್ಗೆ|ಅಂತ)\s*(?:ಇಮೇಲ್|ಮೇಲ್)\s*(?:ಕಳುಹಿಸು|ಕಳುಹಿಸಿ|ಮಾಡು|ಬರೆ)", clean_cmd)
+            if kn_m2:
+                return {"recipient": kn_m2.group(1).strip().rstrip("\u200c"), "subject": "", "body": kn_m2.group(2).strip()}
 
             # 3. Tamil: recipient க்கு ... என்று/பற்றி மின்னஞ்சல் அனுப்பு or recipient க்கு மின்னஞ்சல் அனுப்பு ... என்று/பற்றி
             ta_m = re.search(r"(.+?)(?:க்கு|வுக்கு)\s*(?:மின்னஞ்சல்|மெயில்)\s*(?:அனுப்பு|அனுப்புங்கள்)(?:\s*(?:என்று|பற்றி)\s*(.+))?", clean_cmd)
@@ -4020,10 +4086,27 @@ class CortexOrchestrator:
             if _compound_m:
                 raw_browser = _compound_m.group(1).strip().title()  # e.g. "Safari"
                 query = _compound_m.group(2).strip().rstrip(".").strip()
+                query = re.sub(
+                    r"\s+(?:and\s+)?(?:summarize\s+(?:the\s+findings|the\s+results|it|them)?|give\s+me\s+(?:a\s+)?summary|explain\s+(?:the\s+findings|the\s+results|it|them)?|tell\s+me\s+(?:about\s+it|what\s+you\s+find)?|and\s+report\s+back)[.,;!?]*$",
+                    "",
+                    query,
+                    flags=re.IGNORECASE,
+                ).strip()
                 return {"query": query, "browser": raw_browser}
 
             # Standard query stripping (non-compound forms)
-            query = re.sub(r"^(?:google|search the web for|search for|search|look up|research)\s+", "", text, flags=re.IGNORECASE).strip()
+            query = re.sub(
+                r"^(?:can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|please\s+|i\s+want\s+you\s+to\s+|go\s+ahead\s+and\s+)?(?:google|search\s+(?:the\s+web\s+)?(?:for)?|look\s+up|research|find\s+(?:out\s+)?(?:about)?)\s+",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            ).strip()
+            query = re.sub(
+                r"\s+(?:and\s+)?(?:summarize\s+(?:the\s+findings|the\s+results|it|them)?|give\s+me\s+(?:a\s+)?summary|explain\s+(?:the\s+findings|the\s+results|it|them)?|tell\s+me\s+(?:about\s+it|what\s+you\s+find)?|and\s+report\s+back)[.,;!?]*$",
+                "",
+                query,
+                flags=re.IGNORECASE,
+            ).strip()
             query = re.sub(r"\s+in\s+safari$", "", query, flags=re.IGNORECASE).strip()
             # Detect explicit browser mention even in non-compound forms
             _browser_mention = re.search(r"\bin\s+(safari|chrome|firefox|edge)\b", text, re.IGNORECASE)

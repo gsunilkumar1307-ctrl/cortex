@@ -179,27 +179,26 @@ def compose_whatsapp_message(
     """
     clean_inst = instruction.strip()
 
-    # 1. Check for quoted literal content first (e.g. 'Hi Rahul, this is a test message...')
-    quoted_match = re.search(r"['\"]([^'\"]{10,})['\"]", clean_inst)
-    if quoted_match:
-        quoted_text = quoted_match.group(1).strip()
-        # If the quoted text is the core message, return it directly
-        return quoted_text
-
-    # 2. Strip meta-instruction suffixes (e.g., "Show me the exact recipient...", "Do not send this", "Do not send it")
     meta_instruction_pattern = (
         r"(?:[.,;—–-]\s*)?"
-        r"(?:do\s+not\s+send\s*(?:it|this|anything)?|"
-        r"dont\s+send\s*(?:it|this|anything)?|"
-        r"don'?t\s+send\s*(?:it|this|anything)?|"
-        r"never\s+send\s*(?:it|this|anything)?|"
-        r"without\s+sending(?:\s+it|\s+anything)?|"
+        r"(?:(?:and\s+|but\s+)?(?:do\s+not\s+send|dont\s+send|don'?t\s+send|never\s+send|without\s+sending)(?:\s+(?:it|this|anything))?|"
         r"draft\s+only|"
         r"just\s+draft(?:\s+it)?|"
         r"only\s+draft|"
         r"show\s+me\s+the\s+exact\s+recipient\s+and\s+message.*)"
         r"[.,;!?]?\s*$"
     )
+
+    # 1. Check for quoted literal content first (e.g. 'Hi Rahul, this is a test message...')
+    quoted_match = re.search(r"['\"]([^'\"]{10,})['\"]", clean_inst)
+    if quoted_match:
+        quoted_text = quoted_match.group(1).strip()
+        # Clean any trailing meta instructions mistakenly captured inside quotes
+        cleaned_quoted = re.sub(meta_instruction_pattern, "", quoted_text, flags=re.IGNORECASE).strip()
+        if cleaned_quoted:
+            return cleaned_quoted
+
+    # 2. Strip meta-instruction suffixes (e.g., "Show me the exact recipient...", "Do not send this", "Do not send it")
     clean_body = re.sub(meta_instruction_pattern, "", clean_inst, flags=re.IGNORECASE).strip()
 
     # 3. Strip command and instruction wrappers
@@ -290,6 +289,8 @@ def format_whatsapp_approval_card(draft: WhatsAppDraft, lang_code: str = "en") -
         recipient_display += f" ({draft.phone})"
     else:
         recipient_display += " [Phone number not visible in UI]"
+    if getattr(draft, "contact_source", "") == "user_provided_unverified" or not getattr(draft, "is_verified", True):
+        recipient_display += " [⚠️ Unverified Recipient Identity]"
 
     if draft.draft_only:
         if lang_code == "kn":

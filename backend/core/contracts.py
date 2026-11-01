@@ -1068,6 +1068,9 @@ def command_from_intent(intent: str) -> TaskCommand:
     ):
         return TaskCommand.WEB_SEARCH
 
+    if re.search(r"\b(?:show|reveal|view)\b.*\bin\s+finder\b", text) or text in ("finder", "open finder", "show finder"):
+        return TaskCommand.OPEN_APP
+
     if text.startswith("open ") or "launch " in text or "start " in text:
         return TaskCommand.OPEN_APP
     if text.startswith(("move file ", "rename file ", "move the file ")):

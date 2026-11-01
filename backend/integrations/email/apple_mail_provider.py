@@ -264,7 +264,7 @@ class AppleMailProvider(BaseEmailProvider):
         for to_rec in (to_recipients or [recipient]):
             script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
         if account:
-            script_parts.append(f'        set sender of newMsg to {_apple_string(account)}')
+            script_parts.append(f'        try\n            set sender of newMsg to {_apple_string(account)}\n        end try')
         for c in (cc or []):
             if c:
                 script_parts.append(f'        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(c)}}}')
@@ -364,7 +364,7 @@ class AppleMailProvider(BaseEmailProvider):
         for to_rec in (to_recipients or [recipient]):
             script_parts.append(f'        make new to recipient at end of to recipients with properties {{address:{_apple_string(to_rec)}}}')
         if account:
-            script_parts.append(f'        set sender of newMsg to {_apple_string(account)}')
+            script_parts.append(f'        try\n            set sender of newMsg to {_apple_string(account)}\n        end try')
         for c in (cc or []):
             if c:
                 script_parts.append(f'        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(c)}}}')

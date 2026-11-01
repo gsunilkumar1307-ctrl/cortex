@@ -533,6 +533,14 @@ class DeviceAutomation:
             return DeviceActionResult(False, "No app name was provided.")
         canonical = self.resolve_app_name(app_name)
 
+        if canonical == "Finder":
+            if self.system == "darwin":
+                try:
+                    subprocess.run(["open", "-a", "Finder"], capture_output=True, text=True, check=False)
+                    return DeviceActionResult(True, "Opened Finder.", {"appName": "Finder", "wasRunning": self.is_app_running("Finder")})
+                except Exception as e:
+                    return DeviceActionResult(False, f"Failed to open Finder: {e}")
+
         # Check if already running -> focus it instead of duplicating
         if self.is_app_running(canonical):
             self._focus_app(canonical)

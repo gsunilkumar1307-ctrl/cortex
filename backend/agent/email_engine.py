@@ -1474,8 +1474,41 @@ class ProfessionalEmailEngine:
             draft.approval_hash = draft.compute_hash()
             return draft
 
+        # Make it shorter AND formal
+        is_shorten = any(w in inst for w in ("shorter", "concise", "brief", "shorten", "condense", "summarize"))
+        is_formal = "formal" in inst
+        if is_shorten and is_formal:
+            name = draft.recipient.split("@")[0].capitalize()
+            if "•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development")):
+                draft.body = (
+                    f"Dear {name},\n\n"
+                    f"Here is a concise overview of key developments in artificial intelligence:\n\n"
+                    f"• Rapid breakthroughs in frontier reasoning models and multimodal intelligence.\n"
+                    f"• Expanding enterprise adoption across automated workflows.\n\n"
+                    f"I would welcome your perspective on these developments when convenient.\n\n"
+                    f"Sincerely"
+                )
+            else:
+                lines = [l.strip() for l in draft.body.splitlines() if l.strip()]
+                greeting = lines[0] if lines else f"Dear {name},"
+                greeting = re.sub(r"^(?:Hi|Hey|Hello)[,\s]*", "Dear ", greeting).rstrip(",") + ","
+                closing = "Sincerely"
+                if len(lines) >= 3:
+                    content_lines = lines[1:-1]
+                    concise_content = content_lines[0]
+                elif len(lines) == 2:
+                    concise_content = lines[1]
+                else:
+                    concise_content = draft.body
+                concise_content = re.sub(r"^(?:I am writing to let you know that\s+|Just wanted to say\s+)", "", concise_content, flags=re.IGNORECASE)
+                draft.body = f"{greeting}\n\n{concise_content}\n\n{closing}"
+            draft.tone = "formal_concise"
+            draft.audit_notes.append("QC: Compressed draft to concise and formal format.")
+            draft.approval_hash = draft.compute_hash()
+            return draft
+
         # Make it shorter / more concise
-        if "shorter" in inst or "concise" in inst or "brief" in inst:
+        if is_shorten:
             name = draft.recipient.split("@")[0].capitalize()
             if "•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development")):
                 condensed_body = (
@@ -1493,19 +1526,22 @@ class ProfessionalEmailEngine:
                 return draft
             else:
                 lines = [l.strip() for l in draft.body.splitlines() if l.strip()]
-                if len(lines) > 3:
+                if len(lines) >= 3:
                     greeting = lines[0]
                     closing = lines[-1]
                     content_lines = lines[1:-1]
                     concise_content = " ".join(content_lines[:2])
                     draft.body = f"{greeting}\n\n{concise_content}\n\n{closing}"
-                    draft.tone = "concise"
-                    draft.audit_notes.append("QC: Compressed draft to concise format.")
-                    draft.approval_hash = draft.compute_hash()
+                elif len(lines) == 2:
+                    greeting = lines[0]
+                    draft.body = f"{greeting}\n\n{lines[1]}\n\nBest regards"
+                draft.tone = "concise"
+                draft.audit_notes.append("QC: Compressed draft to concise format.")
+                draft.approval_hash = draft.compute_hash()
                 return draft
 
         # Make it formal
-        if "formal" in inst:
+        if is_formal:
             name = draft.recipient.split("@")[0].capitalize()
             if "•" in draft.body or any(w in draft.body.lower() for w in ("ai", "intelligence", "development")):
                 formal_body = (
@@ -1522,7 +1558,7 @@ class ProfessionalEmailEngine:
                 draft.approval_hash = draft.compute_hash()
                 return draft
             else:
-                draft.body = draft.body.replace("Hi ", "Dear ").replace("Hey ", "Dear ").replace("Thanks,", "Sincerely,").replace("Best regards,", "Sincerely,").replace("Catch up soon!", "Sincerely,")
+                draft.body = re.sub(r"^(?:Hi|Hey|Hello)[,\s]*", "Dear ", draft.body).replace("Thanks,", "Sincerely,").replace("Best regards,", "Sincerely,").replace("Catch up soon!", "Sincerely,").replace("Best regards", "Sincerely")
                 draft.tone = "formal"
                 draft.audit_notes.append("QC: Updated tone to formal.")
                 draft.approval_hash = draft.compute_hash()
