@@ -936,12 +936,87 @@ def task_from_dict(payload: dict[str, Any]) -> Task:
     return task
 
 
+def is_self_capability_query(text: str) -> bool:
+    """
+    Accurately identifies questions inquiring about Cortex's own capabilities,
+    limitations, supported applications, or status, while distinguishing them from
+    direct execution requests (e.g. 'Read my screen') and external web research
+    (e.g. 'Search the web for Cortex alternatives').
+    """
+    import re
+    t = text.lower().strip()
+
+    # Negative filters first: external subjects, third-party alternatives, explicit web search queries
+    if re.search(r"\b(?:alternatives|competitors|vs|versus)\b", t):
+        return False
+    if re.search(r"\b(?:search\s+the\s+web\s+for|find\s+recent\s+articles|look\s+up\s+on\s+google|google)\b", t):
+        return False
+    if re.search(r"\b(?:gpt-?4|claude|chatgpt|siri|alexa|gemini|python|rust|macos|apple)\s+(?:capabilities|features|can\s+do)\b", t):
+        return False
+    if re.search(r"\bcapabilities\s+of\s+(?:gpt-?4|claude|chatgpt|siri|alexa|gemini|python|rust|macos)\b", t):
+        return False
+
+    # 1. Broad capability inquiries: "what can you...", "what are your...", "what can cortex..."
+    if re.search(r"\b(?:what\s+(?:can|could)\s+you\s+(?:actually\s+)?(?:do|help\s+(?:me\s+)?with))\b", t):
+        return True
+    if re.search(r"\b(?:what\s+are\s+your\s+(?:current\s+)?(?:capabilities|features|functions))\b", t):
+        return True
+    if re.search(r"\b(?:what\s+(?:can|could)\s+cortex\s+(?:do|help\s+(?:me\s+)?with))\b", t):
+        return True
+    if re.search(r"\b(?:what\s+(?:can|do)\s+you\s+support|what\s+is\s+supported\s+on\s+this\s+mac)\b", t):
+        return True
+    if re.search(r"\b(?:tell\s+me\s+)?(?:what\s+you\s+can\s+do|your\s+capabilities)\b", t):
+        return True
+    if re.search(r"\b(?:five|5)\s+specific\s+things\s+(?:you\s+can\s+(?:actually\s+)?do|that\s+cortex\s+can\s+do|on\s+this\s+mac)\b", t):
+        return True
+
+    # 2. App control inquiries: "which apps can you control", "what apps can you..."
+    if re.search(r"\b(?:which|what)\s+(?:apps|applications)\s+(?:can\s+you|are\s+you\s+able\s+to)\s+(?:control|automate|manage|support|open)\b", t):
+        return True
+
+    # 3. Limitations: "what are your current limitations", "what cant you do"
+    if re.search(r"\b(?:what\s+are\s+your\s+(?:current\s+)?limitations|what\s+(?:can'\''t|cannot)\s+you\s+do|your\s+limitations)\b", t):
+        return True
+
+    # 4. Specific capability inquiries (asking IF Cortex can do X, without providing action target)
+    if re.search(r"^(?:can\s+you|are\s+you\s+able\s+to|could\s+you\s+tell\s+me\s+if\s+you\s+can)\s+(?:read|see|observe|inspect)\s+(?:my|the)?\s*screen\??$", t):
+        return True
+    if re.search(r"^(?:can\s+you|are\s+you\s+able\s+to)\s+(?:create\s+(?:an?\s+)?email\s+draft|draft\s+(?:an?\s+)?email|draft\s+emails|send\s+emails?)\??$", t):
+        return True
+    if re.search(r"^(?:can\s+you|are\s+you\s+able\s+to)\s+(?:use|control|automate|open)\s+safari\??$", t):
+        return True
+    if re.search(r"^(?:can\s+you|are\s+you\s+able\s+to)\s+(?:take\s+notes|use\s+notes|manage\s+notes|control\s+notes)\??$", t):
+        return True
+    if re.search(r"^(?:can\s+you|are\s+you\s+able\s+to)\s+(?:inspect\s+finder|use\s+finder|list\s+files)\??$", t):
+        return True
+    if re.search(r"^(?:can\s+you|are\s+you\s+able\s+to)\s+(?:use|automate|send)\s+whatsapp\??$", t):
+        return True
+
+    # Indic languages
+    if any(p in t for p in (
+        "ನೀವೇನು ಮಾಡಬಲ್ಲಿರಿ", "ಏನು ಮಾಡಬಹುದು", "ನಿಮ್ಮ ಸಾಮರ್ಥ್ಯಗಳು", "ನೀವು ಏನು ಮಾಡಬಲ್ಲಿರಿ",
+        "ನೀವು ನನಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು", "ಯಾವ ಅಪ್ಲಿಕೇಶನ್‌ಗಳನ್ನು ನಿಯಂತ್ರಿಸಬಹುದು",
+        "ನಿಮ್ಮ ಮಿತಿಗಳು", "ನಿಮ್ಮ ಮಿತಿಗಳೇನು",
+        "आप क्या कर सकते हैं", "आपकी क्षमताएं", "क्या कर सकते हो", "आप क्या मदद कर सकते हैं",
+        "आपकी क्या सीमाएं हैं", "आपकी सीमाएं",
+        "என்ன செய்ய முடியும்", "மீరు ఏమి చేయగలరు"
+    )):
+        return True
+
+    return False
+
+
 def command_from_intent(intent: str) -> TaskCommand:
     import re
     text = intent.lower().strip()
+    if is_self_capability_query(text):
+        return TaskCommand.ASK_QUESTION
+
     prefix_match = re.match(r"^(?:hey\s+cortex|cortex|ok\s+cortex|hello\s+cortex|hi\s+cortex|please|can\s+you|could\s+you)\s*[,:]?\s*(.+)$", text, flags=re.IGNORECASE)
     if prefix_match:
         text = prefix_match.group(1).strip()
+        if is_self_capability_query(text):
+            return TaskCommand.ASK_QUESTION
     if text.startswith(("calculate ", "compute ")) or (text.startswith(("what is ", "what's ")) and any(word in text for word in (" plus ", " minus ", " times ", " divided by ", "+", "-", "*", "/"))) or any(word in text for word in (" plus ", " minus ", " times ", " divided by ")):
         return TaskCommand.CALCULATE
     if text.startswith(("write note ", "write a note ", "create note ", "create a note ", "take a note ", "note ", "open that note", "open the note", "open this note", "view that note")) or text in ("open that note", "open the note", "open this note"):

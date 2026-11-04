@@ -97,6 +97,20 @@ class ApplicationCapabilityRegistry:
                 action_aliases={"new_tab": "New Tab", "address_bar": "Address and Search"},
             )
         )
+        # Apple Notes
+        self.register_profile(
+            AppProfile(
+                name="Notes",
+                bundle_id="com.apple.Notes",
+                preferred_mode=SupportedInterfaceMode.APPLE_EVENTS,
+                supported_modes=[
+                    SupportedInterfaceMode.APPLE_EVENTS,
+                    SupportedInterfaceMode.ACCESSIBILITY_AX,
+                    SupportedInterfaceMode.OCR_VISION,
+                ],
+                action_aliases={"new_note": "New Note", "search": "Search Notes"},
+            )
+        )
 
     def register_profile(self, profile: AppProfile) -> None:
         key = profile.name.lower()

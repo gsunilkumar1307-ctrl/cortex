@@ -23,6 +23,7 @@ try:
         TaskCommand,
         TaskStatus,
         command_from_intent,
+        is_self_capability_query,
         TaskContext,
         UserRequest,
         Intent,
@@ -88,6 +89,7 @@ except ImportError:
         TaskCommand,
         TaskStatus,
         command_from_intent,
+        is_self_capability_query,
         TaskContext,
         UserRequest,
         Intent,
@@ -3264,9 +3266,188 @@ class CortexOrchestrator:
             self._handle_gemini_error(e, context="summarize document")
             return f"Document summary preview ({len(snippet)} chars):\n\n" + snippet[:400]
 
+    @staticmethod
+    def is_self_capability_query(query: str) -> bool:
+        return is_self_capability_query(query)
+
+    def _resolve_capability_question(self, query: str, lang_code: str = "en") -> str:
+        """
+        Dynamically inspects runtime automation status and capability registries to answer
+        inquiries about Cortex's own capabilities, supported tools, controlled applications,
+        limitations, and boundaries without performing web research.
+        """
+        q_lower = query.lower().strip()
+        is_macos = (getattr(self.automation, "system", "") == "darwin") or (sys.platform == "darwin")
+
+        # 1. Screen reading inquiry: "can you read my screen", "are you able to read my screen"
+        if re.search(r"\b(?:read|see|observe|inspect)\s+(?:my|the)?\s*screen\b", q_lower):
+            if lang_code == "kn":
+                return (
+                    "ಹೌದು, ನಾನು ನಿಮ್ಮ ಮ್ಯಾಕ್ ಸ್ಕ್ರೀನ್ ವೀಕ್ಷಿಸಬಲ್ಲೆ.\n\n"
+                    "• **ಕಾರ್ಯನಿರ್ವಹಣೆ**: ಸಕ್ರಿಯ ಅಪ್ಲಿಕೇಶನ್, ವಿಂಡೋ ಶೀರ್ಷಿಕೆ ಮತ್ತು ಗೋಚರಿಸುವ ಬಟನ್‌ಗಳು/ಪಠ್ಯಗಳನ್ನು ಗುರುತಿಸುವುದು.\n"
+                    "• **ಅಗತ್ಯತೆ**: ಮ್ಯಾಕ್ *System Settings > Privacy & Security* ನಲ್ಲಿ Accessibility ಮತ್ತು Screen Recording ಅನುಮತಿಗಳು ಸಕ್ರಿಯವಾಗಿರಬೇಕು.\n"
+                    "• **ಗೌಪ್ಯತೆ**: ನಿಮ್ಮ ಸ್ಪಷ್ಟ ಸೂಚನೆಯಿದ್ದಾಗ ಮಾತ್ರ ಮತ್ತು ಸಂಪೂರ್ಣವಾಗಿ ಆನ್-ಡಿವೈಸ್ ಆಗಿ ಸ್ಕ್ರೀನ್ ಪರಿಶೀಲನೆ ನಡೆಯುತ್ತದೆ."
+                )
+            elif lang_code == "hi":
+                return (
+                    "हाँ, मैं आपकी मैक स्क्रीन का अवलोकन कर सकता हूँ।\n\n"
+                    "• **कार्यप्रणाली**: सक्रिय एप्लिकेशन, विंडो शीर्षक और दिखाई देने वाले बटन/टेक्स्ट को पहचानना।\n"
+                    "• **आवश्यकता**: मैक *System Settings > Privacy & Security* में Accessibility और Screen Recording अनुमतियाँ आवश्यक हैं।\n"
+                    "• **गोपनीयता**: स्क्रीन निरीक्षण केवल आपके अनुरोध पर और पूरी तरह से ऑन-डिवाइस निष्पादित होता है।"
+                )
+            return (
+                "Yes, I can observe your screen on macOS.\n\n"
+                "• **What I can do**: Identify the frontmost active application, the active window title, and visible interactive UI elements (such as buttons, fields, and tabs) using macOS Accessibility APIs and ScreenCaptureKit.\n"
+                "• **System Permissions**: This capability requires macOS **Accessibility** and **Screen Recording** permissions granted in *System Settings > Privacy & Security*.\n"
+                "• **Privacy Boundary**: Screen perception runs on-demand and on-device only when you explicitly instruct me to observe your screen."
+            )
+
+        # 2. Email drafting inquiry: "can you create an email draft"
+        if re.search(r"\b(?:email\s+draft|draft\s+(?:an?\s+)?email|draft\s+emails|send\s+emails?)\b", q_lower):
+            if lang_code == "kn":
+                return (
+                    "ಹೌದು, ನಾನು Apple Mail ನಲ್ಲಿ ಇಮೇಲ್ ಕರಡುಗಳನ್ನು (drafts) ರಚಿಸಬಲ್ಲೆ ಮತ್ತು ತಿದ್ದಬಲ್ಲೆ.\n\n"
+                    "• **ಸಾಮರ್ಥ್ಯಗಳು**: ಸೂಕ್ತ ವಿಷಯ (Subject) ಮತ್ತು ವಿಷಯವಸ್ತುವನ್ನು ರಚಿಸುವುದು, ಸಂಭಾಷಣೆಯ ಮೂಲಕ ತಿದ್ದುಪಡಿ ಮಾಡುವುದು.\n"
+                    "• **ಸುರಕ್ಷತಾ ಗೇಟ್**: ನಿಮ್ಮ ಸ್ಪಷ್ಟ ಅನುಮೋದನೆಯಿಲ್ಲದೆ ನಾನು ಯಾವುದೇ ಇಮೇಲ್ ಅನ್ನು ಎಂದಿಗೂ ನೇರವಾಗಿ ಕಳುಹಿಸುವುದಿಲ್ಲ."
+                )
+            elif lang_code == "hi":
+                return (
+                    "हाँ, मैं Apple Mail में ईमेल ड्राफ्ट तैयार और संपादित कर सकता हूँ।\n\n"
+                    "• **क्षमताएं**: उपयुक्त विषय और मुख्य भाग लिखना, संवाद के माध्यम से ड्राफ्ट में संशोधन करना।\n"
+                    "• **सुरक्षा नीति**: आपकी स्पष्ट स्वीकृति के बिना कोई भी ईमेल कभी स्वतः नहीं भेजा जाता है।"
+                )
+            return (
+                "Yes, I can create and refine email drafts in Apple Mail.\n\n"
+                "• **What I can do**: Compose new email drafts with contextually deduced subjects and bodies, revise existing drafts across conversation turns (e.g. 'make it shorter', 'make it more formal'), and stage drafts in Apple Mail.\n"
+                "• **Supervised Safety Gate**: Consequential actions are strictly guarded — I will **never send an email autonomously**. Sending strictly requires your explicit approval."
+            )
+
+        # 3. Safari / Browser inquiry: "are you able to use safari", "can you use safari"
+        if re.search(r"\b(?:use|control|automate|open)\s+safari\b", q_lower) or "safari" in q_lower:
+            if lang_code == "kn":
+                return (
+                    "ಹೌದು, ನಾನು Safari ಬ್ರೌಸರ್ ಅನ್ನು ನಿಯಂತ್ರಿಸಬಲ್ಲೆ ಮತ್ತು ವೆಬ್ ಸಂಶೋಧನೆ ನಡೆಸಬಲ್ಲೆ.\n\n"
+                    "• **ಸಾಮರ್ಥ್ಯಗಳು**: Safari ತೆರೆಯುವುದು, ವಿಷಯ ಹುಡುಕುವುದು, ವೆಬ್ ಪುಟಗಳ ನೈಜ ಪರಿಶೀಲನೆ ಮತ್ತು ಅಧಿಕೃತ ಮೂಲಗಳೊಂದಿಗೆ ಸಾರಾಂಶ ನೀಡುವುದು.\n"
+                    "• **ಮುಂದಿನ ಕ್ರಮಗಳು**: 'Open that article' ಅಥವಾ 'Open the second result' ಎನ್ನುವ ಮೂಲಕ ನೇರವಾಗಿ ಲೇಖನ ತೆರೆಯಬಹುದು."
+                )
+            elif lang_code == "hi":
+                return (
+                    "हाँ, मैं सफारी (Safari) ब्राउज़र का उपयोग कर सकता हूँ और वास्तविक वेब रिसर्च कर सकता हूँ।\n\n"
+                    "• **क्षमताएं**: सफारी खोलना, वेब सर्च करना, पेजों का निरीक्षण करना और स्रोत लिंक के साथ संक्षिप्त सारांश देना।\n"
+                    "• **फॉलो-अप**: रिसर्च के बाद आप 'Open that article' या 'Open the second result' कहकर सीधे आर्टिकल खोल सकते हैं।"
+                )
+            return (
+                "Yes, I have full operational integration with Safari on macOS.\n\n"
+                "• **What I can do**: Launch or activate Safari, execute real-time web searches, inspect page content, and generate structured summaries with verified source citations.\n"
+                "• **Follow-up Navigation**: You can seamlessly instruct me to 'open that article', 'open the second result', or 'shorten the summary'."
+            )
+
+        # 4. Which apps can you control: "which apps can you control"
+        if re.search(r"\b(?:which|what)\s+(?:apps|applications)\b", q_lower) and any(w in q_lower for w in ("control", "automate", "manage", "support")):
+            if lang_code == "kn":
+                return (
+                    "### ಮ್ಯಾಕ್‌ನಲ್ಲಿ ನಿಯಂತ್ರಿಸಬಹುದಾದ ಅಪ್ಲಿಕೇಶನ್‌ಗಳು:\n\n"
+                    "1. **Safari**: ನೈಜ-ಸಮಯದ ವೆಬ್ ಹುಡುಕಾಟ ಮತ್ತು ಲೇಖನ ಪರಿಶೀಲನೆ.\n"
+                    "2. **Apple Mail**: ಇಮೇಲ್ ಕರಡು ರಚನೆ, ತಿದ್ದುಪಡಿ ಮತ್ತು ಮೇಲ್ವಿಚಾರಿತ ಕಳುಹಿಸುವಿಕೆ.\n"
+                    "3. **Finder**: ಡೌನ್‌ಲೋಡ್ಸ್ ಮತ್ತು ಅನುಮತಿಸಲಾದ ಫೋಲ್ಡರ್‌ಗಳಲ್ಲಿ ಫೈಲ್ ಪರಿಶೀಲನೆ (ಓದುವ-ಮಾತ್ರ).\n"
+                    "4. **Apple Notes**: ಹೊಸ ನೋಟ್ಸ್ ರಚನೆ ಮತ್ತು ಬುಲೆಟ್ ಅಂಶಗಳನ್ನು ಸೇರಿಸುವುದು.\n"
+                    "5. **WhatsApp Desktop**: ಗೋಚರ UI ಮೂಲಕ ಸಂಪರ್ಕ ಹುಡುಕಾಟ ಮತ್ತು ಕರಡು ಸಿದ್ಧತೆ.\n"
+                    "6. **ಯಾವುದೇ ಮ್ಯಾಕ್ ಆ್ಯಪ್**: ತೆರೆಯುವುದು (Open), ಕೇಂದ್ರೀಕರಿಸುವುದು (Focus) ಮತ್ತು ಸ್ಥಿತಿ ಪರಿಶೀಲನೆ."
+                )
+            elif lang_code == "hi":
+                return (
+                    "### मैक पर नियंत्रित किए जा सकने वाले प्रमुख ऐप्स:\n\n"
+                    "1. **Safari**: लाइव वेब रिसर्च, पेज इंस्पेक्शन और सोर्स साइटेशन।\n"
+                    "2. **Apple Mail**: ड्राफ्ट रचना, संपादन और अनुमोदन-आधारित सुरक्षा।\n"
+                    "3. **Finder**: डाउनलोड्स और सैंडबॉक्स डायरेक्टरी में रीड-ओनली फाइल निरीक्षण।\n"
+                    "4. **Apple Notes**: नए नोट्स बनाना और बुलेट पॉइंट्स जोड़ना।\n"
+                    "5. **WhatsApp Desktop**: सत्यापित संपर्कों के लिए दृश्यमान UI ड्राफ्ट तैयार करना।\n"
+                    "6. **कोई भी मैक ऐप**: लॉन्च करना, अग्रभूमि में लाना और स्टेटस जांचना।"
+                )
+            return (
+                "### Applications Controlled & Supported on this Mac:\n\n"
+                "1. **Safari**: Live web research, page content extraction, URL navigation, and citation synthesis.\n"
+                "2. **Apple Mail**: Creating, refining, and staging drafts with a strict supervisor approval gate before sending.\n"
+                "3. **Finder**: Read-only inspection of user directories (e.g. Downloads) and visible filename listings without file modifications.\n"
+                "4. **Apple Notes**: Creating new notes, updating titles, appending bullet points, and bringing Notes to the foreground.\n"
+                "5. **WhatsApp Desktop**: Visible-UI contact lookup and message drafting (draft-only protection; requires WhatsApp Desktop).\n"
+                "6. **Universal macOS Apps**: Launching, focusing, and inspecting running status for any installed application."
+            )
+
+        # 5. Limitations / Boundaries inquiry: "what are your current limitations"
+        if re.search(r"\b(?:limitations|restrictions|what\s+(?:can'\''t|cannot)\s+you\s+do)\b", q_lower):
+            if lang_code == "kn":
+                return (
+                    "### ಕಾರ್ಟೆಕ್ಸ್ ಪ್ರಸ್ತುತ ಮಿತಿಗಳು ಮತ್ತು ಸುರಕ್ಷತಾ ಗಡಿಗಳು:\n\n"
+                    "• **ಮೇಲ್ವಿಚಾರಿತ ಸುರಕ್ಷತಾ ಮಾದರಿ**: ನಿಮ್ಮ ಸ್ಪಷ್ಟ ಒಪ್ಪಿಗೆಯಿಲ್ಲದೆ ಇಮೇಲ್ ಅಥವಾ ವ್ಯಾಟ್ಸಾಪ್ ಸಂದೇಶಗಳನ್ನು ಕಳುಹಿಸಲಾಗುವುದಿಲ್ಲ.\n"
+                    "• **ವಿನಾಶಕಾರಿಯಲ್ಲದ ಕಾರ್ಯಾಚರಣೆಗಳು**: ಫೈಂಡರ್‌ನಲ್ಲಿ ಫೈಲ್‌ಗಳನ್ನು ಅಳಿಸುವುದು ಅಥವಾ ಅನಿಯಂತ್ರಿತ ಟರ್ಮಿನಲ್ ಕಮಾಂಡ್‌ಗಳನ್ನು ರನ್ ಮಾಡುವುದನ್ನು ನಿರ್ಬಂಧಿಸಲಾಗಿದೆ.\n"
+                    "• **ಸಿಸ್ಟಮ್ ಅನುಮತಿಗಳು**: ಸ್ಕ್ರೀನ್ ವೀಕ್ಷಣೆಗೆ macOS Accessibility & Screen Recording ಅನುಮತಿಗಳು ಅಗತ್ಯ.\n"
+                    "• **ಆಫ್‌ಲೈನ್ ಮಿತಿಗಳು**: ಸಾಮಾನ್ಯ ಸಂಭಾಷಣೆ ಮತ್ತು ಸ್ಥಳೀಯ ಮ್ಯಾಕ್ ಆಟೊಮೇಷನ್ ಆಫ್‌ಲೈನ್‌ನಲ್ಲೂ ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತದೆ; ಆದರೆ ವೆಬ್ ಸಂಶೋಧನೆಗೆ ಇಂಟರ್ನೆಟ್ ಸಂಪರ್ಕ ಅಗತ್ಯ."
+                )
+            elif lang_code == "hi":
+                return (
+                    "### Cortex की वर्तमान सीमाएं और सुरक्षा नीतियां:\n\n"
+                    "• **पर्यवेक्षित सुरक्षा मॉडल**: आपकी स्पष्ट अनुमति के बिना ईमेल या व्हाट्सएप संदेश कभी नहीं भेजे जाते हैं।\n"
+                    "• **अविनाशी संचालन**: फाइंडर में फाइलें हटाना या मनमाने टर्मिनल कमांड चलाना निषिद्ध है।\n"
+                    "• **सिस्टम अनुमतियाँ**: स्क्रीन अवलोकन के लिए macOS Accessibility और Screen Recording अनुमतियाँ अनिवार्य हैं।\n"
+                    "• **इंटरनेट निर्भरता**: सामान्य बातचीत और स्थानीय स्वचालन ऑफलाइन चलता है, जबकि लाइव वेब रिसर्च के लिए इंटरनेट आवश्यक है।"
+                )
+            return (
+                "### Cortex Operational Limitations & Safety Boundaries:\n\n"
+                "• **Supervised Safety Model**: Consequential actions (such as sending emails or WhatsApp messages) strictly require your explicit confirmation before execution; Cortex will never send messages autonomously.\n"
+                "• **Non-Destructive File Operations**: Finder file inspection is read-only. Cortex does not delete user files or perform destructive file modifications.\n"
+                "• **macOS Permission Requirements**: Screen observation depends on macOS system permissions (Accessibility and Screen Recording in System Settings).\n"
+                "• **Connectivity**: Conversational intelligence and local macOS automation operate on-device, but live web research requires active internet connectivity."
+            )
+
+        # 6. General capabilities or "five specific things you can actually do on this Mac":
+        if lang_code == "kn":
+            return (
+                "ನಾನು ಕಾರ್ಟೆಕ್ಸ್ (Cortex) — ನಿಮ್ಮ ಮ್ಯಾಕ್‌ನ ಡ್ಯುಯಲ್-ಇಂಟೆಲಿಜೆನ್ಸ್ AI ಸಹಾಯಕ. ಈ ಮ್ಯಾಕ್‌ನಲ್ಲಿ ನಾನು ಮಾಡಬಹುದಾದ **ಐದು ನಿರ್ದಿಷ್ಟ ಕೆಲಸಗಳು** ಇಲ್ಲಿವೆ:\n\n"
+                "1. **ಸಫಾರಿ ವೆಬ್ ಸಂಶೋಧನೆ (Safari Research)**: ಸಫಾರಿ ತೆರೆದು ನೈಜ-ಸಮಯದ ಹುಡುಕಾಟ, ಲೇಖನ ಪರಿಶೀಲನೆ ಮತ್ತು ಅಧಿಕೃತ ಮೂಲಗಳೊಂದಿಗೆ ಸಾರಾಂಶ ನೀಡುವುದು.\n"
+                "2. **ಸ್ಕ್ರೀನ್ ವೀಕ್ಷಣೆ (Screen Observation)**: ಮ್ಯಾಕ್ Accessibility ಮತ್ತು ScreenCaptureKit ಬಳಸಿ ಸಕ್ರಿಯ ಅಪ್ಲಿಕೇಶನ್, ವಿಂಡೋ ಮತ್ತು ಗೋಚರಿಸುವ 5 ಬಟನ್/ಅಂಶಗಳನ್ನು ಪರಿಶೀಲಿಸುವುದು.\n"
+                "3. **ಆಪಲ್ ಮೇಲ್ ಡ್ರಾಫ್ಟ್ (Apple Mail)**: ಹೊಸ ಇಮೇಲ್ ಕರಡು ರಚಿಸುವುದು, ಸಂಭಾಷಣೆಯ ಮೂಲಕ ತಿದ್ದುಪಡಿ ಮಾಡುವುದು ಮತ್ತು ಕಳುಹಿಸುವ ಮುನ್ನ ನಿಮ್ಮ ಅನುಮೋದನೆ ಪಡೆಯುವುದು.\n"
+                "4. **ಫೈಂಡರ್ ಪರಿಶೀಲನೆ (Finder Inspection)**: ಡೌನ್‌ಲೋಡ್ಸ್ ಫೋಲ್ಡರ್‌ನಲ್ಲಿರುವ ಮೊದಲ 5 ಫೈಲ್‌ಗಳನ್ನು ಸುರಕ್ಷಿತವಾಗಿ ಪಟ್ಟಿ ಮಾಡುವುದು.\n"
+                "5. **ಆಪಲ್ ನೋಟ್ಸ್ ನಿರ್ವಹಣೆ (Apple Notes)**: ಹೊಸ ನೋಟ್ಸ್ ರಚಿಸುವುದು ಮತ್ತು ಮುಖ್ಯ ಅಂಶಗಳನ್ನು ದಾಖಲಿಸುವುದು.\n\n"
+                "### ಸಿಸ್ಟಮ್ ಸ್ಥಿತಿ & ಸುರಕ್ಷತಾ ಗಡಿಗಳು:\n"
+                "• **ಪರಿಶೀಲಿಸಿದ ಸಾಮರ್ಥ್ಯಗಳು**: ಸಂಭಾಷಣೆ, ಸಫಾರಿ ಸಂಶೋಧನೆ, ಮೇಲ್ ಡ್ರಾಫ್ಟ್, ಫೈಂಡರ್ ಪರಿಶೀಲನೆ, ನೋಟ್ಸ್.\n"
+                "• **ಅನುಮತಿ ಅಗತ್ಯ**: ಸ್ಕ್ರೀನ್ ವೀಕ್ಷಣೆಗೆ macOS Accessibility & Screen Recording ಅನುಮತಿಗಳು ಬೇಕು.\n"
+                "• **ನಿರ್ಬಂಧಿತ/ಬೆಂಬಲವಿಲ್ಲದ್ದು**: ಅನುಮೋದನೆಯಿಲ್ಲದೆ ಸ್ವಯಂ ಇಮೇಲ್ ಕಳುಹಿಸುವಿಕೆ ಮತ್ತು ಫೈಲ್ ಅಳಿಸುವಿಕೆಯನ್ನು ನಿರ್ಬಂಧಿಸಲಾಗಿದೆ."
+            )
+        elif lang_code == "hi":
+            return (
+                "मैं Cortex हूँ — आपका मैक ड्यूल-इंटेलिजेंस AI असिस्टेंट। इस मैक पर मैं जो **पाँच विशिष्ट कार्य** कर सकता हूँ, वे यहाँ दिए गए हैं:\n\n"
+                "1. **सफारी वेब रिसर्च (Safari Research)**: सफारी खोलकर लाइव सर्च, वेब पेजों का विश्लेषण और प्रामाणिक सोर्स लिंक के साथ सारांश तैयार करना।\n"
+                "2. **स्क्रीन अवलोकन (Screen Observation)**: सक्रिय ऐप, विंडो और 5 दृश्यमान इंटरैक्टिव तत्वों का सटीक निरीक्षण करना।\n"
+                "3. **एप्पल मेल ड्राफ्ट (Apple Mail)**: उपयुक्त विषय के साथ नया ड्राफ्ट बनाना, संशोधन करना और भेजने से पहले आपकी स्वीकृति लेना।\n"
+                "4. **फाइंडर फाइल सूची (Finder Inspection)**: डाउनलोड्स डायरेक्टरी में बिना किसी बदलाव के पहले 5 फाइलों के नाम दिखाना।\n"
+                "5. **एप्पल नोट्स प्रबंधन (Apple Notes)**: नए नोट्स बनाना और बुलेट बिंदु जोड़ना।\n\n"
+                "### सिस्टम स्थिति और सुरक्षा नीतियां:\n"
+                "• **सत्यापित व उपलब्ध**: संवाद, सफारी रिसर्च, मेल ड्राफ्ट, फाइंडर इंस्पेक्शन, नोट्स।\n"
+                "• **सिस्टम अनुमतियों के अधीन**: स्क्रीन अवलोकन के लिए Accessibility और Screen Recording अनुमतियाँ आवश्यक हैं।\n"
+                "• **असमर्थित व अवरुद्ध**: बिना पूर्व स्वीकृति संदेश भेजना और फाइल विलोपन निषिद्ध है।"
+            )
+
+        return (
+            "I am Cortex, your dual-intelligence macOS AI assistant. Here are **five specific things I can actually do on this Mac**:\n\n"
+            "1. **Safari Web Research & Live Inspection**: I can launch or focus Safari, execute web searches on DuckDuckGo, inspect page contents, and synthesize structured answers with cited URLs and article navigation.\n"
+            "2. **macOS Screen Observation & UI Perception**: I can inspect your active application, frontmost window, and visible interactive UI elements using macOS Accessibility APIs and ScreenCaptureKit.\n"
+            "3. **Apple Mail Drafting & Iterative Revision**: I can compose email drafts in Apple Mail, infer appropriate subjects, refine drafts across conversation turns, and gate sending through an explicit approval request.\n"
+            "4. **Finder File & Directory Inspection**: I can navigate Finder to your Downloads folder and list visible filenames in safe read-only mode without modifying the filesystem.\n"
+            "5. **Apple Notes Management**: I can create structured notes in Apple Notes, append bulleted takeaways or action items, and foreground Notes.\n\n"
+            "### System Status & Security Boundaries:\n"
+            "• **Available & Verified on this Mac**: Conversational AI, Safari Research, Apple Mail Drafting, Finder Downloads Inspection, Apple Notes Management.\n"
+            "• **Implemented with System Permission Requirements**: macOS Screen Observation (requires Accessibility and Screen Recording permissions in *System Settings > Privacy & Security*); WhatsApp Desktop (requires WhatsApp Desktop installed).\n"
+            "• **Unsupported & Safety-Gated Operations**: Autonomous sending of emails or messages without explicit approval (enforced by the Supervised Safety Model); destructive file deletions; unverified shell execution."
+        )
+
     def _answer_general_question(self, query: str, lang_code: str = "en") -> str:
         """Google-style direct answering: fact first, explanation after."""
         q_lower = query.lower().strip()
+
+        # Check for self-capability inquiries BEFORE anything else
+        if is_self_capability_query(query):
+            return self._resolve_capability_question(query, lang_code)
 
         # Check for conversation recap / summary requests
         if re.search(r"\b(?:summarize|recap|summary of)\s+(?:our\s+)?(?:conversation|chat|discussion|talk)\b", q_lower):
@@ -3319,7 +3500,7 @@ class CortexOrchestrator:
         ))
 
         if is_capabilities:
-            return get_cortex_capabilities(lang_code)
+            return self._resolve_capability_question(query, lang_code)
         if is_status:
             return get_cortex_status(lang_code)
         if is_greeting or is_identity:
@@ -3563,7 +3744,7 @@ class CortexOrchestrator:
             r"\b(?:cancel|stop|clear|shorter|longer|more|less|summary|draft|open|close|send|yes|no)\b",
             q_lower
         ))
-        if not is_meta_directive:
+        if not is_meta_directive and not is_self_capability_query(query):
             try:
                 results = search_web(query, max_results=3)
                 if results:
@@ -3629,7 +3810,7 @@ class CortexOrchestrator:
 
             # Prefer Gemini-provided answer from intent analysis, but always verify it's non-empty
             answer = (task.params.get("answer") or "").strip()
-            if not answer:
+            if not answer or is_self_capability_query(task.intent):
                 answer = self._answer_general_question(task.intent, lang_code=lang)
             if not answer:
                 answer = localize("no_confident_answer", lang, query=task.intent)
