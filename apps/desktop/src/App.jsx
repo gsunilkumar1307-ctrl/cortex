@@ -309,7 +309,7 @@ export function App() {
 
   return (
     <AssistantRuntimeProvider runtime={cortex.runtime}>
-      <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans text-slate-100 antialiased select-none">
+      <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg)] font-sans text-[var(--text)] antialiased select-none">
         {/* Left Sidebar (Desktop Workspace View) */}
         {!isFloating && (
           <CortexSidebar
@@ -328,7 +328,7 @@ export function App() {
         )}
 
         {/* Main Conversation Area */}
-        <div className="flex flex-1 flex-col h-full overflow-hidden bg-gradient-to-b from-slate-900/60 via-slate-950/80 to-slate-950">
+        <div className="flex flex-1 flex-col h-full min-w-0 overflow-hidden bg-[var(--bg)]">
           {/* Header */}
           <CortexHeader
             threadTitle={cortex.threadTitle}
@@ -356,10 +356,11 @@ export function App() {
             onSpeakText={speakText}
             isSpeaking={isSpeaking}
             onStopSpeech={stopSpeech}
+            theme={theme}
           />
 
           {/* Composer Footer */}
-          <div className="p-4 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+          <div className="p-4 bg-gradient-to-t from-[var(--bg)] via-[var(--bg)]/90 to-transparent">
             <CortexComposer
               onSend={(text) => cortex.onNew({ content: [{ type: "text", text }] })}
               onStop={cortex.onCancel}

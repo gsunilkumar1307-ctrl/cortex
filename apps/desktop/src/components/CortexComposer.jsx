@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
-  Send, Square, Paperclip, Mic, MicOff, X,
+  Send, Square, Paperclip, Mic, X,
   FileText, Image as ImageIcon, Sparkles, Terminal,
   Globe, Mail, Calendar, Compass, Shield, Eye, HelpCircle,
-  Folder, Sliders, ChevronUp, Bot
+  Folder, Sliders, Bot
 } from "lucide-react";
 
 const SLASH_COMMANDS = [
@@ -98,55 +98,50 @@ export function CortexComposer({
 
     // Intercept client-side slash commands
     if (trimmed === "/new") {
-      setText("");
       if (onNewThread) onNewThread();
+      setText("");
       return;
     }
     if (trimmed === "/settings") {
-      setText("");
       if (onOpenSettings) onOpenSettings();
+      setText("");
       return;
     }
-    if (trimmed === "/tasks" || trimmed === "/history") {
-      setText("");
+    if (trimmed === "/tasks" || trimmed === "/memory") {
       if (onOpenAudit) onOpenAudit();
-      return;
-    }
-    if (trimmed === "/stop") {
       setText("");
-      if (onStop) onStop();
       return;
-    }
-
-    // Normal submission (including attached file names if any)
-    let payloadText = trimmed;
-    if (attachments.length > 0) {
-      const attachmentSummaries = attachments.map(a => `[Attached file: ${a.name} (${Math.round(a.size / 1024)}KB)]`).join("\n");
-      payloadText = payloadText ? `${payloadText}\n\n${attachmentSummaries}` : attachmentSummaries;
     }
 
     if (onSend) {
-      onSend(payloadText);
+      let fullMessage = trimmed;
+      if (attachments.length > 0) {
+        const fileNames = attachments.map((a) => a.name).join(", ");
+        fullMessage = `${fullMessage ? fullMessage + "\n\n" : ""}[Attached files: ${fileNames}]`;
+      }
+      onSend(fullMessage);
     }
 
     setText("");
     setAttachments([]);
     setShowSlashMenu(false);
     setShowMentionMenu(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
   };
 
-  // Keydown handling: Enter to send, Shift+Enter for newline
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
-    } else if (e.key === "Escape") {
+    }
+    if (e.key === "Escape") {
       setShowSlashMenu(false);
       setShowMentionMenu(false);
     }
   };
 
-  // Select slash command
   const selectSlashCommand = (cmd) => {
     if (cmd.command === "/new") {
       if (onNewThread) onNewThread();
@@ -154,79 +149,62 @@ export function CortexComposer({
     } else if (cmd.command === "/settings") {
       if (onOpenSettings) onOpenSettings();
       setText("");
-    } else if (cmd.command === "/tasks") {
+    } else if (cmd.command === "/tasks" || cmd.command === "/memory") {
       if (onOpenAudit) onOpenAudit();
       setText("");
-    } else if (cmd.command === "/help") {
-      setText("What can Cortex do? Explain your capabilities and available tools.");
-    } else if (cmd.command === "/research") {
-      setText("Research the latest developments in AI agents and summarize findings with citations.");
-    } else if (cmd.command === "/plan") {
-      setText("Plan my project work for the next seven days with structured milestones.");
-    } else if (cmd.command === "/summarize") {
-      setText("Summarize our discussion so far into key takeaways.");
-    } else if (cmd.command === "/memory") {
-      setText("What do you know about me? Show stored preferences and facts.");
-    } else if (cmd.command === "/voice") {
-      setText("Explain how voice interaction and multilingual TTS work.");
     } else {
       setText(cmd.command + " ");
+      textareaRef.current?.focus();
     }
     setShowSlashMenu(false);
-    if (textareaRef.current) textareaRef.current.focus();
   };
 
-  // Select @-mention
-  const selectMention = (mention) => {
-    const updated = text.replace(/(?:^|\s)@([a-zA-Z]*)$/, ` ${mention.tag} `);
-    setText(updated.trimStart());
+  const selectMention = (m) => {
+    const updated = text.replace(/@([a-zA-Z]*)$/, `${m.tag} `);
+    setText(updated);
     setShowMentionMenu(false);
-    if (textareaRef.current) textareaRef.current.focus();
+    textareaRef.current?.focus();
   };
 
-  // File attachments validation (< 15MB)
-  const processFiles = (files) => {
-    const valid = [];
-    const MAX_SIZE = 15 * 1024 * 1024; // 15MB limit
-    for (const f of files) {
-      if (f.size > MAX_SIZE) {
-        alert(`File ${f.name} exceeds 15MB limit.`);
+  const processFiles = (fileList) => {
+    const newAttachments = [];
+    for (const file of fileList) {
+      if (file.size > 15 * 1024 * 1024) {
+        alert(`File "${file.name}" exceeds 15MB limit.`);
         continue;
       }
-      valid.push({
-        id: "att-" + Date.now() + "-" + Math.random().toString(36).substr(2, 4),
-        name: f.name,
-        size: f.size,
-        type: f.type,
-        file: f,
+      newAttachments.push({
+        id: Math.random().toString(36).substring(7),
+        name: file.name,
+        size: (file.size / 1024).toFixed(1) + " KB",
+        type: file.type.startsWith("image/") ? "image" : "document",
       });
     }
-    setAttachments(prev => [...prev, ...valid]);
+    setAttachments((prev) => [...prev, ...newAttachments]);
   };
 
   const handleFileInputChange = (e) => {
     if (e.target.files) {
       processFiles(Array.from(e.target.files));
     }
+    e.target.value = "";
   };
 
-  // Clipboard image pasting
   const handlePaste = (e) => {
-    if (e.clipboardData?.items) {
-      const files = [];
-      for (const item of e.clipboardData.items) {
-        if (item.kind === "file") {
-          const file = item.getAsFile();
-          if (file) files.push(file);
-        }
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === "file") {
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
       }
-      if (files.length > 0) {
-        processFiles(files);
-      }
+    }
+    if (files.length > 0) {
+      processFiles(files);
     }
   };
 
-  // Drag-and-drop
   const handleDragOver = (e) => {
     e.preventDefault();
     setIsDragOver(true);
@@ -245,11 +223,13 @@ export function CortexComposer({
   };
 
   const removeAttachment = (id) => {
-    setAttachments(prev => prev.filter(a => a.id !== id));
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
-  const filteredSlash = SLASH_COMMANDS.filter(s => s.command.slice(1).includes(slashFilter));
-  const filteredMentions = MENTIONS.filter(m => m.tag.slice(1).includes(mentionFilter) || m.label.toLowerCase().includes(mentionFilter));
+  const filteredSlash = SLASH_COMMANDS.filter((s) => s.command.slice(1).includes(slashFilter));
+  const filteredMentions = MENTIONS.filter(
+    (m) => m.tag.slice(1).includes(mentionFilter) || m.label.toLowerCase().includes(mentionFilter)
+  );
 
   return (
     <div
@@ -258,14 +238,14 @@ export function CortexComposer({
       onDrop={handleDrop}
       className={`relative mx-auto w-full max-w-3xl rounded-2xl border transition-all ${
         isDragOver
-          ? "border-sky-400 bg-sky-950/40 ring-2 ring-sky-400/50"
-          : "border-white/10 bg-black/40 shadow-2xl backdrop-blur-xl"
+          ? "border-[var(--accent)] bg-[var(--surface-2)] ring-2 ring-[var(--accent-glow)]"
+          : "border-[var(--border-2)] bg-[var(--surface)] shadow-lg"
       }`}
     >
       {/* Drag & drop overlay indicator */}
       {isDragOver && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-sky-950/80 backdrop-blur-sm">
-          <div className="flex items-center gap-2 text-sm font-semibold text-sky-200">
+        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-[var(--surface)]/90 backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--accent)]">
             <Paperclip className="h-5 w-5 animate-bounce" /> Drop files to attach to Cortex
           </div>
         </div>
@@ -273,8 +253,8 @@ export function CortexComposer({
 
       {/* Slash command popup */}
       {showSlashMenu && filteredSlash.length > 0 && (
-        <div className="absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-xl border border-white/10 bg-slate-900/95 shadow-2xl backdrop-blur-xl z-20">
-          <div className="border-b border-white/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+        <div className="absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-xl border border-[var(--border-2)] bg-[var(--surface)] shadow-2xl backdrop-blur-xl z-30">
+          <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
             Cortex Slash Commands
           </div>
           <div className="max-h-56 overflow-y-auto p-1">
@@ -285,12 +265,12 @@ export function CortexComposer({
                   key={cmd.command}
                   type="button"
                   onClick={() => selectSlashCommand(cmd)}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 transition-colors"
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
                 >
-                  <Icon className="h-4 w-4 text-sky-400 flex-shrink-0" />
+                  <Icon className="h-4 w-4 text-[var(--accent)] flex-shrink-0" />
                   <div className="flex-1 truncate">
-                    <span className="font-mono font-semibold text-sky-300">{cmd.command}</span>
-                    <span className="ml-2 text-[11px] text-slate-400">{cmd.desc}</span>
+                    <span className="font-mono font-semibold text-[var(--accent)]">{cmd.command}</span>
+                    <span className="ml-2 text-[11px] text-[var(--text-muted)]">{cmd.desc}</span>
                   </div>
                 </button>
               );
@@ -301,8 +281,8 @@ export function CortexComposer({
 
       {/* Mention popup */}
       {showMentionMenu && filteredMentions.length > 0 && (
-        <div className="absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-xl border border-white/10 bg-slate-900/95 shadow-2xl backdrop-blur-xl z-20">
-          <div className="border-b border-white/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+        <div className="absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-xl border border-[var(--border-2)] bg-[var(--surface)] shadow-2xl backdrop-blur-xl z-30">
+          <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
             Reference Connected Capability
           </div>
           <div className="max-h-56 overflow-y-auto p-1">
@@ -313,12 +293,12 @@ export function CortexComposer({
                   key={m.tag}
                   type="button"
                   onClick={() => selectMention(m)}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 transition-colors"
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
                 >
-                  <Icon className="h-4 w-4 text-purple-400 flex-shrink-0" />
+                  <Icon className="h-4 w-4 text-[var(--accent-2)] flex-shrink-0" />
                   <div className="flex-1 truncate">
-                    <span className="font-mono font-semibold text-purple-300">{m.tag}</span>
-                    <span className="ml-2 text-[11px] text-slate-400">{m.label}</span>
+                    <span className="font-mono font-semibold text-[var(--accent-2)]">{m.tag}</span>
+                    <span className="ml-2 text-[11px] text-[var(--text-muted)]">{m.label}</span>
                   </div>
                 </button>
               );
@@ -329,22 +309,23 @@ export function CortexComposer({
 
       {/* Attachment previews */}
       {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-2 p-3 border-b border-white/5">
-          {attachments.map((att) => (
+        <div className="flex flex-wrap gap-2 border-b border-[var(--border)] p-2.5">
+          {attachments.map((a) => (
             <div
-              key={att.id}
-              className="group flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-200"
+              key={a.id}
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1 text-xs text-[var(--text)]"
             >
-              {att.type.startsWith("image/") ? (
-                <ImageIcon className="h-3.5 w-3.5 text-sky-400" />
+              {a.type === "image" ? (
+                <ImageIcon className="h-3.5 w-3.5 text-[var(--accent)]" />
               ) : (
-                <FileText className="h-3.5 w-3.5 text-slate-400" />
+                <FileText className="h-3.5 w-3.5 text-[var(--text-muted)]" />
               )}
-              <span className="max-w-[120px] truncate text-[11px]">{att.name}</span>
+              <span className="max-w-[140px] truncate text-[11px] font-medium">{a.name}</span>
+              <span className="text-[10px] text-[var(--text-subtle)]">({a.size})</span>
               <button
                 type="button"
-                onClick={() => removeAttachment(att.id)}
-                className="ml-1 rounded-full p-0.5 text-slate-400 hover:bg-white/10 hover:text-white"
+                onClick={() => removeAttachment(a.id)}
+                className="ml-1 text-[var(--text-subtle)] hover:text-[var(--bad)]"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -353,35 +334,37 @@ export function CortexComposer({
         </div>
       )}
 
-      {/* Input area */}
-      <form onSubmit={handleSubmit} className="flex flex-col p-2.5">
+      {/* Main Composer Input Form */}
+      <form onSubmit={handleSubmit} className="p-3">
+        {/* Multiline textarea */}
         <textarea
           ref={textareaRef}
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
+          placeholder="Ask Cortex, plan a workflow, or type '/' for commands..."
           rows={1}
-          placeholder="Ask Cortex, type '/' for commands, or '@' to tag tools…"
-          className="w-full resize-none bg-transparent px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none leading-relaxed"
+          className="w-full resize-none bg-transparent px-1 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] focus:outline-none leading-relaxed"
+          style={{ minHeight: "26px", maxHeight: "180px" }}
         />
 
-        {/* Action bar bottom */}
-        <div className="flex items-center justify-between pt-1">
+        {/* Action Toolbar */}
+        <div className="flex items-center justify-between pt-2 border-t border-[var(--border)] mt-2">
           <div className="flex items-center gap-1">
-            {/* Attachment Button */}
+            {/* Attachment Button with Guaranteed Hidden File Input */}
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileInputChange}
               multiple
-              className="hidden"
+              style={{ display: "none" }}
             />
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-slate-200 transition-colors"
-              title="Attach File"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
+              title="Attach File (<15MB)"
             >
               <Paperclip className="h-4 w-4" />
             </button>
@@ -392,12 +375,12 @@ export function CortexComposer({
               onClick={onAudioDictate}
               className={`flex h-8 w-8 items-center justify-center rounded-lg transition-all ${
                 isListening
-                  ? "bg-rose-500 text-white shadow-md shadow-rose-500/30 animate-pulse"
-                  : "text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                  ? "bg-[var(--bad)] text-white shadow-md animate-pulse"
+                  : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               }`}
-              title={isListening ? "Listening… click to send" : "Voice Dictation"}
+              title={isListening ? "Listening… click to finish" : "Voice Dictation"}
             >
-              {isListening ? <Mic className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              <Mic className="h-4 w-4" />
             </button>
 
             {/* Command Helper Pills */}
@@ -405,21 +388,21 @@ export function CortexComposer({
               <button
                 type="button"
                 onClick={() => selectSlashCommand({ command: "/help" })}
-                className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-mono text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                className="rounded bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-mono text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] border border-[var(--border)]"
               >
                 /help
               </button>
               <button
                 type="button"
                 onClick={() => selectSlashCommand({ command: "/plan" })}
-                className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-mono text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                className="rounded bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-mono text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] border border-[var(--border)]"
               >
                 /plan
               </button>
               <button
                 type="button"
                 onClick={() => selectSlashCommand({ command: "/research" })}
-                className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-mono text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                className="rounded bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-mono text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] border border-[var(--border)]"
               >
                 /research
               </button>
@@ -431,7 +414,7 @@ export function CortexComposer({
               <button
                 type="button"
                 onClick={onStop}
-                className="flex h-8 items-center gap-1.5 rounded-lg bg-rose-600 px-3 text-xs font-semibold text-white hover:bg-rose-500 shadow-md transition-all"
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--bad)] px-3 text-xs font-semibold text-white hover:opacity-90 shadow-sm transition-all"
               >
                 <Square className="h-3.5 w-3.5 fill-current" /> Stop
               </button>
@@ -439,7 +422,7 @@ export function CortexComposer({
               <button
                 type="submit"
                 disabled={!text.trim() && attachments.length === 0}
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-md hover:bg-indigo-500 disabled:opacity-30 disabled:hover:bg-indigo-600 transition-all"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-sm hover:opacity-90 disabled:opacity-30 disabled:hover:opacity-30 transition-all"
                 title="Send Message (Enter)"
               >
                 <Send className="h-4 w-4" />
@@ -452,4 +435,3 @@ export function CortexComposer({
   );
 }
 export default CortexComposer;
-

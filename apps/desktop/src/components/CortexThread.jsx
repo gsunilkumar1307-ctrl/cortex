@@ -2,11 +2,10 @@ import React, { useRef, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { vscDarkPlus, prism } from "react-syntax-highlighter/dist/esm/styles/prism";
 import {
   Sparkles, User, Copy, Check, Volume2, RotateCcw,
-  Edit2, ChevronLeft, ChevronRight, ArrowDown, ExternalLink,
-  Bot, Clock, AlertTriangle, Play, Square
+  Edit2, ArrowDown, Bot, Square, Mail, Compass, Calendar, Monitor, FileText
 } from "lucide-react";
 
 import MailDraftCard from "./tools/MailDraftCard";
@@ -29,6 +28,7 @@ export function CortexThread({
   onSpeakText,
   isSpeaking,
   onStopSpeech,
+  theme = "dark",
 }) {
   const viewportRef = useRef(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -93,24 +93,24 @@ export function CortexThread({
   };
 
   // Render markdown code blocks with copy button
-  const renderCodeBlock = ({ node, inline, className, children, ...props }) => {
+  const renderCodeBlock = ({ inline, className, children }) => {
     const match = /language-(\w+)/.exec(className || "");
     const codeString = String(children).replace(/\n$/, "");
 
     if (!inline && match) {
       return (
-        <div className="relative my-3 overflow-hidden rounded-xl border border-white/10 bg-black/50 shadow-md">
-          <div className="flex items-center justify-between border-b border-white/5 bg-slate-900/60 px-3.5 py-1.5 text-[11px] text-slate-400">
-            <span className="font-mono text-indigo-300 font-semibold">{match[1]}</span>
+        <div className="relative my-3 overflow-hidden rounded-xl border border-[var(--border-2)] bg-[var(--surface-2)]">
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-1.5 text-[11px] font-mono text-[var(--text-muted)]">
+            <span className="uppercase tracking-wide">{match[1]}</span>
             <button
               type="button"
               onClick={() => copyToClipboard(codeString, codeString)}
-              className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-white/10 text-slate-300 hover:text-white"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
             >
               {copiedId === codeString ? (
                 <>
-                  <Check className="h-3 w-3 text-emerald-400" />
-                  <span className="text-[10px] text-emerald-400">Copied</span>
+                  <Check className="h-3 w-3 text-[var(--good)]" />
+                  <span className="text-[10px] text-[var(--good)]">Copied</span>
                 </>
               ) : (
                 <>
@@ -120,32 +120,32 @@ export function CortexThread({
               )}
             </button>
           </div>
-          <SyntaxHighlighter
-            style={vscDarkPlus}
-            language={match[1]}
-            PreTag="div"
-            customStyle={{
-              margin: 0,
-              padding: "1rem",
-              background: "transparent",
-              fontSize: "12px",
-              lineHeight: "1.5",
-            }}
-            {...props}
-          >
-            {codeString}
-          </SyntaxHighlighter>
+          <div className="p-3 text-xs overflow-x-auto font-mono">
+            <SyntaxHighlighter
+              style={theme === "light" ? prism : vscDarkPlus}
+              language={match[1]}
+              PreTag="div"
+              customStyle={{
+                margin: 0,
+                background: "transparent",
+                padding: 0,
+                fontSize: "12px",
+              }}
+            >
+              {codeString}
+            </SyntaxHighlighter>
+          </div>
         </div>
       );
     }
+
     return (
-      <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-xs text-indigo-200" {...props}>
+      <code className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-xs text-[var(--accent)] border border-[var(--border)]">
         {children}
       </code>
     );
   };
 
-  // Helper to extract plain text from message content
   const getMessageText = (msg) => {
     if (typeof msg.content === "string") return msg.content;
     if (Array.isArray(msg.content)) {
@@ -157,66 +157,86 @@ export function CortexThread({
     return "";
   };
 
+  const WELCOME_SUGGESTIONS = [
+    {
+      title: "Draft an email",
+      desc: "Prepare a concise status update in Apple Mail",
+      icon: Mail,
+      prompt: "Draft an email to Rahul explaining that I will be late for our sync.",
+    },
+    {
+      title: "Research a topic",
+      desc: "Gather evidence and verified citations from the web",
+      icon: Compass,
+      prompt: "Research the latest developments in AI agents and provide citations.",
+    },
+    {
+      title: "Plan my day",
+      desc: "Decompose a multi-step project plan with dependencies",
+      icon: Calendar,
+      prompt: "Plan my project tasks for today with clear step dependencies.",
+    },
+    {
+      title: "Control desktop applications",
+      desc: "Inspect active app windows, files in Finder, or notes",
+      icon: Monitor,
+      prompt: "Inspect my active desktop window and summarize what is visible.",
+    },
+    {
+      title: "Summarize a document",
+      desc: "Extract key takeaways and actionable action items",
+      icon: FileText,
+      prompt: "Summarize the key architectural decisions of Cortex Agent.",
+    },
+  ];
+
   return (
     <div
       ref={viewportRef}
       onScroll={handleScroll}
       className="relative flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6"
     >
-      {/* Empty State */}
+      {/* Empty Welcome State */}
       {messages.length === 0 && (
-        <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-xl mx-auto text-center space-y-6 select-none animate-in fade-in duration-500">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 to-sky-400 shadow-xl shadow-indigo-500/20">
-            <Sparkles className="h-8 w-8 text-white" />
+        <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-2xl mx-auto text-center space-y-6 select-none animate-in fade-in duration-500 py-6">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--accent)] text-white shadow-xl shadow-[var(--accent-glow)]">
+            <Sparkles className="h-7 w-7" />
           </div>
 
           <div className="space-y-2">
-            <h2 className="text-xl font-bold tracking-tight text-slate-100">
-              Cortex Desktop Assistant
+            <h2 className="text-xl font-bold tracking-tight text-[var(--text)]">
+              Welcome to Cortex
             </h2>
-            <p className="text-xs text-slate-400 leading-relaxed max-w-md">
-              Supervised autonomous companion for macOS. Controls Apple Mail, Safari, Finder, Notes, and desktop workflows with cryptographic approval gates.
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed max-w-md mx-auto">
+              Your autonomous desktop companion for macOS. Controls Apple Mail, Safari, Finder, and desktop workflows with cryptographic approval gates.
             </p>
           </div>
 
-          {/* Starter Suggestions */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full pt-4">
-            {[
-              {
-                title: "Draft an Email",
-                desc: "Draft an email to Rahul explaining I'll be 15 minutes late",
-                prompt: "Draft an email to Rahul explaining that I will be late for our sync.",
-              },
-              {
-                title: "Plan 7-Day Project",
-                desc: "Decompose a 7-day milestones roadmap",
-                prompt: "Plan my project work for the next seven days with milestones.",
-              },
-              {
-                title: "Evidence Web Research",
-                desc: "Search latest autonomous AI agent papers",
-                prompt: "Research the latest developments in AI agents and provide citations.",
-              },
-              {
-                title: "ಕನ್ನಡದಲ್ಲಿ ಸಂಭಾಷಣೆ",
-                desc: "ನನ್ನ ಕೆಲಸಗಳನ್ನು ಪ್ಲಾನ್ ಮಾಡು",
-                prompt: "ನನಗೆ ಇವತ್ತಿನ ಕೆಲಸಗಳನ್ನು ಪ್ಲಾನ್ ಮಾಡು.",
-              },
-            ].map((item, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => onSelectPrompt && onSelectPrompt(item.prompt)}
-                className="flex flex-col text-left rounded-xl border border-white/5 bg-white/5 p-3.5 hover:border-indigo-500/40 hover:bg-indigo-950/20 transition-all group"
-              >
-                <span className="text-xs font-semibold text-slate-200 group-hover:text-indigo-300">
-                  {item.title}
-                </span>
-                <span className="text-[11px] text-slate-400 mt-1 line-clamp-2">
-                  {item.desc}
-                </span>
-              </button>
-            ))}
+          {/* 5 Suggested Task Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 w-full pt-2">
+            {WELCOME_SUGGESTIONS.map((item, idx) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => onSelectPrompt && onSelectPrompt(item.prompt)}
+                  className={`flex flex-col text-left rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3.5 hover:border-[var(--accent)] hover:bg-[var(--surface-hover)] transition-all group shadow-sm ${
+                    idx === 4 ? "sm:col-span-2 lg:col-span-1" : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Icon className="h-4 w-4 text-[var(--accent)] group-hover:scale-110 transition-transform" />
+                    <span className="text-xs font-semibold text-[var(--text)] group-hover:text-[var(--accent)]">
+                      {item.title}
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-[var(--text-muted)] line-clamp-2 leading-snug">
+                    {item.desc}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -236,22 +256,22 @@ export function CortexThread({
             } space-y-2`}
           >
             {/* Header info (avatar, role, timestamp) */}
-            <div className="flex items-center gap-2 px-1 text-[11px] text-slate-500 font-medium">
+            <div className="flex items-center gap-2 px-1 text-[11px] text-[var(--text-subtle)] font-medium">
               {isUser ? (
                 <>
                   <span>You</span>
-                  <div className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-700 text-slate-300">
+                  <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--surface-2)] text-[var(--text)]">
                     <User className="h-3 w-3" />
                   </div>
                 </>
               ) : (
                 <>
-                  <div className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-600 text-white shadow-sm">
+                  <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-sm">
                     <Bot className="h-3 w-3" />
                   </div>
-                  <span className="text-indigo-400 font-semibold">Cortex</span>
+                  <span className="text-[var(--accent)] font-semibold">Cortex</span>
                   {task?.language && task.language !== "en" && (
-                    <span className="rounded bg-indigo-500/10 px-1 py-0.2 text-[9px] uppercase font-mono text-indigo-300">
+                    <span className="rounded bg-[var(--surface-2)] px-1.5 py-0.2 text-[9px] uppercase font-mono text-[var(--accent)] border border-[var(--border)]">
                       {task.language}
                     </span>
                   )}
@@ -261,25 +281,25 @@ export function CortexThread({
 
             {/* Message Bubble / Editor */}
             {isEditing ? (
-              <div className="w-full rounded-2xl border border-indigo-500/40 bg-indigo-950/40 p-3 space-y-2">
+              <div className="w-full rounded-2xl border border-[var(--accent)] bg-[var(--surface)] p-3 space-y-2 shadow-sm">
                 <textarea
                   value={editInputText}
                   onChange={(e) => setEditInputText(e.target.value)}
                   rows={3}
-                  className="w-full resize-none rounded-lg bg-black/40 p-2 text-xs text-white border border-white/10 focus:border-indigo-400 focus:outline-none"
+                  className="w-full resize-none rounded-lg bg-[var(--surface-2)] p-2 text-xs text-[var(--text)] border border-[var(--border)] focus:border-[var(--accent)] focus:outline-none"
                 />
                 <div className="flex justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setEditingMessageId(null)}
-                    className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                    className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
                     onClick={() => handleSaveEdit(msg.id)}
-                    className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-500"
+                    className="rounded-md bg-[var(--accent)] px-3 py-1 text-xs font-semibold text-white hover:opacity-90"
                   >
                     Update & Resend
                   </button>
@@ -289,23 +309,46 @@ export function CortexThread({
               <div
                 className={`group relative rounded-2xl px-4 py-3 text-sm leading-relaxed transition-all ${
                   isUser
-                    ? "bg-indigo-600 text-white shadow-md rounded-tr-sm max-w-[85%]"
-                    : "bg-slate-900/80 border border-white/10 text-slate-100 shadow-lg rounded-tl-sm w-full backdrop-blur-md"
+                    ? "bg-[var(--surface-2)] text-[var(--text)] border border-[var(--border-2)] shadow-sm rounded-tr-sm max-w-[85%]"
+                    : "bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] shadow-sm rounded-tl-sm w-full backdrop-blur-md"
                 }`}
               >
                 {/* Text Content with Markdown */}
                 {isUser ? (
                   <div className="whitespace-pre-wrap break-words">{textContent}</div>
                 ) : (
-                  <div className="prose prose-invert max-w-none text-xs sm:text-sm prose-p:leading-relaxed prose-headings:font-bold prose-a:text-indigo-400 hover:prose-a:underline prose-table:my-2 prose-th:border prose-th:border-white/10 prose-th:p-2 prose-td:border prose-td:border-white/10 prose-td:p-2">
+                  <div className="text-xs sm:text-sm leading-relaxed text-[var(--text)] space-y-2">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
                         code: renderCodeBlock,
+                        p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
+                        h1: ({ children }) => <h1 className="text-base font-bold my-2 text-[var(--text)]">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-sm font-bold my-1.5 text-[var(--text)]">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-xs font-bold my-1 text-[var(--text)]">{children}</h3>,
+                        ul: ({ children }) => <ul className="list-disc pl-5 my-1.5 space-y-1">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal pl-5 my-1.5 space-y-1">{children}</ol>,
+                        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                        blockquote: ({ children }) => (
+                          <blockquote className="border-l-2 border-[var(--accent)] pl-3 my-2 italic text-[var(--text-muted)]">
+                            {children}
+                          </blockquote>
+                        ),
+                        a: ({ href, children }) => (
+                          <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] underline hover:opacity-80">
+                            {children}
+                          </a>
+                        ),
                         table: ({ children }) => (
-                          <div className="overflow-x-auto my-3 rounded-lg border border-white/10">
-                            <table className="w-full text-left text-xs border-collapse">{children}</table>
+                          <div className="overflow-x-auto my-3 rounded-lg border border-[var(--border)]">
+                            <table className="w-full text-left text-xs border-collapse divide-y divide-[var(--border)]">{children}</table>
                           </div>
+                        ),
+                        th: ({ children }) => (
+                          <th className="p-2 font-semibold bg-[var(--surface-2)] text-[var(--text)]">{children}</th>
+                        ),
+                        td: ({ children }) => (
+                          <td className="p-2 border-t border-[var(--border)] text-[var(--text-muted)]">{children}</td>
                         ),
                       }}
                     >
@@ -314,9 +357,9 @@ export function CortexThread({
 
                     {/* Generative UI Components */}
                     {task && (
-                      <div className="pt-2 space-y-3 not-prose">
+                      <div className="pt-2 space-y-3">
                         {/* 1. Apple Mail Draft */}
-                        {(task.command === "send_mail" || task.command === "email" || task.intent?.includes("email") || task.intent?.includes("draft")) && (
+                        {(task.command === "draft_mail" || task.command === "send_mail" || task.command === "email" || task.command?.includes("mail") || task.intent?.toLowerCase().includes("email") || task.intent?.toLowerCase().includes("draft")) && (
                           <MailDraftCard
                             task={task}
                             onApprove={onApproveTask}
@@ -385,18 +428,18 @@ export function CortexThread({
 
                 {/* Action Bar (Copy, Edit, TTS, Reload) */}
                 <div
-                  className={`mt-2 flex items-center gap-1.5 pt-1.5 border-t border-white/5 text-[11px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity ${
+                  className={`mt-2 flex items-center gap-1.5 pt-1.5 border-t border-[var(--border)] text-[11px] text-[var(--text-subtle)] opacity-0 group-hover:opacity-100 transition-opacity ${
                     isUser ? "justify-end" : "justify-start"
                   }`}
                 >
                   <button
                     type="button"
                     onClick={() => copyToClipboard(textContent, msg.id)}
-                    className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-white transition-colors"
+                    className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
                     title="Copy message"
                   >
                     {copiedId === msg.id ? (
-                      <Check className="h-3 w-3 text-emerald-400" />
+                      <Check className="h-3 w-3 text-[var(--good)]" />
                     ) : (
                       <Copy className="h-3 w-3" />
                     )}
@@ -406,7 +449,7 @@ export function CortexThread({
                     <button
                       type="button"
                       onClick={() => handleStartEdit(msg)}
-                      className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-white transition-colors"
+                      className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
                       title="Edit question"
                     >
                       <Edit2 className="h-3 w-3" />
@@ -424,8 +467,8 @@ export function CortexThread({
                             if (onSpeakText) onSpeakText(textContent, task?.language || "en");
                           }
                         }}
-                        className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-white/10 transition-colors ${
-                          isSpeaking ? "text-indigo-400 animate-pulse" : "hover:text-white"
+                        className={`flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--surface-hover)] transition-colors ${
+                          isSpeaking ? "text-[var(--accent)] animate-pulse" : "hover:text-[var(--text)]"
                         }`}
                         title={isSpeaking ? "Stop Speaking" : "Read Aloud"}
                       >
@@ -435,7 +478,7 @@ export function CortexThread({
                       <button
                         type="button"
                         onClick={onReload}
-                        className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-white transition-colors"
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
                         title="Regenerate response"
                       >
                         <RotateCcw className="h-3 w-3" />
@@ -454,7 +497,7 @@ export function CortexThread({
         <button
           type="button"
           onClick={scrollToBottom}
-          className="fixed bottom-24 right-8 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-indigo-600 text-white shadow-xl hover:bg-indigo-500 transition-all"
+          className="fixed bottom-24 right-8 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-xl hover:opacity-90 transition-all"
           title="Scroll to latest"
         >
           <ArrowDown className="h-4 w-4" />
@@ -464,4 +507,3 @@ export function CortexThread({
   );
 }
 export default CortexThread;
-

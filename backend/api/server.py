@@ -62,7 +62,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -88,7 +88,7 @@ async def session_auth_middleware(request: Request, call_next):
                 )
     return await call_next(request)
 
-orchestrator = CortexOrchestrator()
+orchestrator = CortexOrchestrator(use_gemini=False if os.getenv("CORTEX_OFFLINE_MODE") == "1" else None)
 voice_transcriber = VoiceTranscriber()
 
 class ChatRequest(BaseModel):

@@ -306,6 +306,15 @@ export function useCortexRuntime({ preferredLanguage = "auto", onTaskChange, onA
     }
   }, [threadId, refreshThreads]);
 
+  const convertMessage = useCallback((msg) => {
+    return {
+      role: msg.role,
+      content: msg.content,
+      id: msg.id,
+      createdAt: msg.createdAt || new Date(),
+    };
+  }, []);
+
   // assistant-ui external store runtime bridge
   const runtime = useExternalStoreRuntime({
     messages,
@@ -315,6 +324,7 @@ export function useCortexRuntime({ preferredLanguage = "auto", onTaskChange, onA
     onReload,
     onCancel,
     setMessages,
+    convertMessage,
   });
 
   return {
