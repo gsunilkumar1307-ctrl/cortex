@@ -1,7 +1,3 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 /* ══════════════════════════════════════════════════════════════
    CORTEX — SIRI-INSPIRED DESIGN SYSTEM & COMPANION STYLES
    ══════════════════════════════════════════════════════════════ */
@@ -114,9 +110,8 @@
 }
 
 /* ─── Base ───────────────────────────────────────────────── */
-html, body, #root {
+html, body {
   height: 100%;
-  width: 100%;
   font-family: var(--font);
   background: var(--bg);
   color: var(--text);
