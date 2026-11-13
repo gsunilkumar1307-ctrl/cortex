@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
-  Send, Square, Paperclip, Mic, X,
-  FileText, Image as ImageIcon, Sparkles, Terminal,
-  Globe, Mail, Calendar, Compass, Shield, Eye, HelpCircle,
-  Folder, Sliders, Bot
+  Send, Square, Paperclip, Mic, X, VolumeX,
+  FileText, Sparkles, Terminal, Globe, Mail, Calendar,
+  Compass, Shield, Eye, HelpCircle, Folder, Sliders, Bot
 } from "lucide-react";
+import AudioVisualizer from "./AudioVisualizer";
 
 const SLASH_COMMANDS = [
   { command: "/help", desc: "Show Cortex capabilities and command reference", icon: HelpCircle },
@@ -37,6 +37,10 @@ export function CortexComposer({
   onNewThread,
   onAudioDictate,
   isListening,
+  activeAudioStream = null,
+  isSpeaking = false,
+  onStopSpeech = null,
+  focusTrigger = 0,
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
@@ -48,6 +52,13 @@ export function CortexComposer({
 
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Auto-focus when focusTrigger increments (e.g. summoned via global shortcut)
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [focusTrigger]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -190,21 +201,6 @@ export function CortexComposer({
     e.target.value = "";
   };
 
-  const handlePaste = (e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const files = [];
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].kind === "file") {
-        const file = items[i].getAsFile();
-        if (file) files.push(file);
-      }
-    }
-    if (files.length > 0) {
-      processFiles(files);
-    }
-  };
-
   const handleDragOver = (e) => {
     e.preventDefault();
     setIsDragOver(true);
@@ -251,13 +247,13 @@ export function CortexComposer({
         </div>
       )}
 
-      {/* Slash command popup */}
+      {/* Popover: Slash Commands Menu */}
       {showSlashMenu && filteredSlash.length > 0 && (
-        <div className="absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-xl border border-[var(--border-2)] bg-[var(--surface)] shadow-2xl backdrop-blur-xl z-30">
-          <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
-            Cortex Slash Commands
+        <div className="absolute bottom-full left-0 mb-2 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-2xl backdrop-blur-xl z-40 animate-in fade-in slide-in-from-bottom-2">
+          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+            Commands
           </div>
-          <div className="max-h-56 overflow-y-auto p-1">
+          <div className="max-h-56 overflow-y-auto space-y-0.5">
             {filteredSlash.map((cmd) => {
               const Icon = cmd.icon;
               return (
@@ -267,9 +263,9 @@ export function CortexComposer({
                   onClick={() => selectSlashCommand(cmd)}
                   className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
                 >
-                  <Icon className="h-4 w-4 text-[var(--accent)] flex-shrink-0" />
+                  <Icon className="h-3.5 w-3.5 text-[var(--accent)]" />
                   <div className="flex-1 truncate">
-                    <span className="font-mono font-semibold text-[var(--accent)]">{cmd.command}</span>
+                    <span className="font-mono font-medium text-[var(--accent)]">{cmd.command}</span>
                     <span className="ml-2 text-[11px] text-[var(--text-muted)]">{cmd.desc}</span>
                   </div>
                 </button>
@@ -279,13 +275,13 @@ export function CortexComposer({
         </div>
       )}
 
-      {/* Mention popup */}
+      {/* Popover: @-Mentions Menu */}
       {showMentionMenu && filteredMentions.length > 0 && (
-        <div className="absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-xl border border-[var(--border-2)] bg-[var(--surface)] shadow-2xl backdrop-blur-xl z-30">
-          <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
-            Reference Connected Capability
+        <div className="absolute bottom-full left-0 mb-2 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-2xl backdrop-blur-xl z-40 animate-in fade-in slide-in-from-bottom-2">
+          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+            Cortex Integrations
           </div>
-          <div className="max-h-56 overflow-y-auto p-1">
+          <div className="max-h-56 overflow-y-auto space-y-0.5">
             {filteredMentions.map((m) => {
               const Icon = m.icon;
               return (
@@ -295,10 +291,11 @@ export function CortexComposer({
                   onClick={() => selectMention(m)}
                   className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
                 >
-                  <Icon className="h-4 w-4 text-[var(--accent-2)] flex-shrink-0" />
+                  <Icon className="h-3.5 w-3.5 text-[var(--accent)]" />
                   <div className="flex-1 truncate">
-                    <span className="font-mono font-semibold text-[var(--accent-2)]">{m.tag}</span>
-                    <span className="ml-2 text-[11px] text-[var(--text-muted)]">{m.label}</span>
+                    <span className="font-semibold text-[var(--text)]">{m.label}</span>
+                    <span className="ml-1.5 font-mono text-[10px] text-[var(--accent)]">{m.tag}</span>
+                    <div className="text-[10px] text-[var(--text-muted)] truncate">{m.desc}</div>
                   </div>
                 </button>
               );
@@ -307,25 +304,21 @@ export function CortexComposer({
         </div>
       )}
 
-      {/* Attachment previews */}
+      {/* Attachments Preview Chips */}
       {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-2 border-b border-[var(--border)] p-2.5">
-          {attachments.map((a) => (
+        <div className="flex flex-wrap gap-2 px-3 pt-3">
+          {attachments.map((att) => (
             <div
-              key={a.id}
+              key={att.id}
               className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1 text-xs text-[var(--text)]"
             >
-              {a.type === "image" ? (
-                <ImageIcon className="h-3.5 w-3.5 text-[var(--accent)]" />
-              ) : (
-                <FileText className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-              )}
-              <span className="max-w-[140px] truncate text-[11px] font-medium">{a.name}</span>
-              <span className="text-[10px] text-[var(--text-subtle)]">({a.size})</span>
+              <Paperclip className="h-3.5 w-3.5 text-[var(--accent)]" />
+              <span className="truncate max-w-[140px] font-medium">{att.name}</span>
+              <span className="text-[10px] text-[var(--text-muted)]">({att.size})</span>
               <button
                 type="button"
-                onClick={() => removeAttachment(a.id)}
-                className="ml-1 text-[var(--text-subtle)] hover:text-[var(--bad)]"
+                onClick={() => removeAttachment(att.id)}
+                className="ml-1 text-[var(--text-muted)] hover:text-[var(--bad)]"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -334,25 +327,28 @@ export function CortexComposer({
         </div>
       )}
 
-      {/* Main Composer Input Form */}
-      <form onSubmit={handleSubmit} className="p-3">
-        {/* Multiline textarea */}
+      {/* Main Composer Form */}
+      <form onSubmit={handleSubmit} className="p-2.5">
         <textarea
           ref={textareaRef}
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder="Ask Cortex, plan a workflow, or type '/' for commands..."
+          placeholder={
+            isListening
+              ? "Listening to your voice… (Speak now)"
+              : isSpeaking
+              ? "Cortex is speaking… (Type or press Esc to stop)"
+              : "Ask anything, or use /plan, /research, @mail… (⌘⇧A)"
+          }
           rows={1}
-          className="w-full resize-none bg-transparent px-1 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] focus:outline-none leading-relaxed"
-          style={{ minHeight: "26px", maxHeight: "180px" }}
+          className="w-full resize-none bg-transparent px-2 py-1 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] focus:outline-none"
         />
 
         {/* Action Toolbar */}
-        <div className="flex items-center justify-between pt-2 border-t border-[var(--border)] mt-2">
-          <div className="flex items-center gap-1">
-            {/* Attachment Button with Guaranteed Hidden File Input */}
+        <div className="flex items-center justify-between pt-1.5 border-t border-[var(--border)] mt-1.5">
+          <div className="flex items-center gap-1 min-w-0">
+            {/* Attachment Button */}
             <input
               type="file"
               ref={fileInputRef}
@@ -363,69 +359,74 @@ export function CortexComposer({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] transition-colors"
               title="Attach File (<15MB)"
             >
-              <Paperclip className="h-4 w-4" />
+              <Paperclip className="h-3.5 w-3.5" />
             </button>
 
-            {/* Voice Dictation Button */}
+            {/* Voice Dictation / Push-To-Talk Button */}
             <button
               type="button"
               onClick={onAudioDictate}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg transition-all ${
+              className={`flex h-7 items-center gap-1.5 px-2 rounded-lg transition-all text-xs font-medium ${
                 isListening
-                  ? "bg-[var(--bad)] text-white shadow-md animate-pulse"
+                  ? "bg-amber-500 text-black shadow-md animate-pulse"
                   : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               }`}
-              title={isListening ? "Listening… click to finish" : "Voice Dictation"}
+              title={isListening ? "Listening… click to send voice" : "Speak to Cortex"}
             >
-              <Mic className="h-4 w-4" />
+              <Mic className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline text-[11px]">{isListening ? "Listening…" : "Voice"}</span>
             </button>
 
-            {/* Command Helper Pills */}
-            <div className="hidden sm:flex items-center gap-1.5 ml-2">
+            {/* Real-time Web Audio Reactive Waveform Visualization */}
+            {(isListening || isSpeaking) && (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[var(--surface-2)] border border-[var(--border)]">
+                <AudioVisualizer
+                  stream={activeAudioStream}
+                  isActive={isListening || isSpeaking}
+                  mode={isListening ? "listening" : "speaking"}
+                  barCount={16}
+                  height={16}
+                />
+                <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                  {isListening ? "mic live" : "speaking"}
+                </span>
+              </div>
+            )}
+
+            {/* Stop Speaking Button when TTS is active */}
+            {isSpeaking && onStopSpeech && (
               <button
                 type="button"
-                onClick={() => selectSlashCommand({ command: "/help" })}
-                className="rounded bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-mono text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] border border-[var(--border)]"
+                onClick={onStopSpeech}
+                className="flex h-7 items-center gap-1 px-2 rounded-lg bg-[var(--surface-2)] text-rose-400 hover:bg-rose-500/20 text-[11px] font-medium border border-rose-500/30 transition-colors"
+                title="Stop Read-Aloud Speech (Esc)"
               >
-                /help
+                <VolumeX className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Stop Audio</span>
               </button>
-              <button
-                type="button"
-                onClick={() => selectSlashCommand({ command: "/plan" })}
-                className="rounded bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-mono text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] border border-[var(--border)]"
-              >
-                /plan
-              </button>
-              <button
-                type="button"
-                onClick={() => selectSlashCommand({ command: "/research" })}
-                className="rounded bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-mono text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] border border-[var(--border)]"
-              >
-                /research
-              </button>
-            </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             {isRunning ? (
               <button
                 type="button"
                 onClick={onStop}
-                className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--bad)] px-3 text-xs font-semibold text-white hover:opacity-90 shadow-sm transition-all"
+                className="flex h-7 items-center gap-1.5 rounded-lg bg-[var(--bad)] px-2.5 text-xs font-semibold text-white hover:opacity-90 shadow-sm transition-all"
               >
-                <Square className="h-3.5 w-3.5 fill-current" /> Stop
+                <Square className="h-3 w-3 fill-current" /> Stop
               </button>
             ) : (
               <button
                 type="submit"
                 disabled={!text.trim() && attachments.length === 0}
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-sm hover:opacity-90 disabled:opacity-30 disabled:hover:opacity-30 transition-all"
+                className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-sm hover:opacity-90 disabled:opacity-30 disabled:hover:opacity-30 transition-all"
                 title="Send Message (Enter)"
               >
-                <Send className="h-4 w-4" />
+                <Send className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
@@ -434,4 +435,5 @@ export function CortexComposer({
     </div>
   );
 }
+
 export default CortexComposer;

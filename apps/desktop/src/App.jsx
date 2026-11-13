@@ -4,6 +4,7 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 
 import { useCortexRuntime } from "./runtime/useCortexRuntime";
 import cortexApi from "./runtime/cortexApi";
+import { AudioRecorder } from "./runtime/audioRecorder";
 import CortexSidebar from "./components/CortexSidebar";
 import CortexHeader from "./components/CortexHeader";
 import CortexThread from "./components/CortexThread";
@@ -20,7 +21,7 @@ export function App() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [speakingRate, setSpeakingRate] = useState(1.0);
   const [chimesEnabled, setChimesEnabled] = useState(true);
-  const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [theme, setTheme] = useState("dark");
   const [isFloating, setIsFloating] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -28,19 +29,42 @@ export function App() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [activeAudioStream, setActiveAudioStream] = useState(null);
+  const [focusTrigger, setFocusTrigger] = useState(0);
+  const [trayStatus, setTrayStatus] = useState("ready");
 
   // Audio & speech state refs
-  const audioCtxRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const processorRef = useRef(null);
-  const audioChunksRef = useRef([]);
   const speechAudioRef = useRef(null);
+  const audioRecorderRef = useRef(null);
   const wakeRecognizerRef = useRef(null);
+  const companionConfigRef = useRef(null);
+
+  // Sync tray status helper
+  const setTrayStatusSafe = useCallback((status) => {
+    setTrayStatus(status);
+    if (cortexBridge?.setTrayStatus) {
+      cortexBridge.setTrayStatus(status);
+    }
+  }, []);
 
   // Apply theme to DOM
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
+
+  // Load companion settings on startup
+  useEffect(() => {
+    if (cortexBridge?.getCompanionSettings) {
+      cortexBridge.getCompanionSettings().then((cfg) => {
+        if (cfg) {
+          companionConfigRef.current = cfg;
+          if ("wakeWordEnabled" in cfg) {
+            setWakeWordEnabled(Boolean(cfg.wakeWordEnabled));
+          }
+        }
+      }).catch(() => {});
+    }
+  }, []);
 
   // Audio chime player
   const playChime = useCallback((type = "activate") => {
@@ -64,6 +88,18 @@ export function App() {
           osc.start(now + idx * 0.08);
           osc.stop(now + idx * 0.08 + 0.28);
         });
+      } else if (type === "activate") {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(523.25, now);
+        osc.frequency.exponentialRampToValueAtTime(659.25, now + 0.12);
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.2);
       } else if (type === "alert") {
         [440, 554.37].forEach((freq, idx) => {
           const osc = ctx.createOscillator();
@@ -94,7 +130,7 @@ export function App() {
     } catch {}
   }, [chimesEnabled]);
 
-  // Read aloud / TTS implementation
+  // Read aloud / TTS implementation with instant stop
   const stopSpeech = useCallback(() => {
     if (speechAudioRef.current) {
       try {
@@ -108,12 +144,14 @@ export function App() {
       } catch {}
     }
     setIsSpeaking(false);
-  }, []);
+    setTrayStatusSafe("ready");
+  }, [setTrayStatusSafe]);
 
   const speakText = useCallback((text, lang = "en") => {
     if (!audioEnabled || !text) return;
     stopSpeech();
     setIsSpeaking(true);
+    setTrayStatusSafe("speaking");
 
     try {
       const url = cortexApi.getTtsUrl(text, lang, speakingRate);
@@ -123,26 +161,36 @@ export function App() {
       audio.onended = () => {
         setIsSpeaking(false);
         speechAudioRef.current = null;
+        setTrayStatusSafe("ready");
       };
       audio.onerror = () => {
         // Fallback to Web Speech Synthesis if backend TTS fails
         if ("speechSynthesis" in window) {
           const utterance = new SpeechSynthesisUtterance(text);
           utterance.rate = speakingRate;
-          utterance.onend = () => setIsSpeaking(false);
-          utterance.onerror = () => setIsSpeaking(false);
+          utterance.onend = () => {
+            setIsSpeaking(false);
+            setTrayStatusSafe("ready");
+          };
+          utterance.onerror = () => {
+            setIsSpeaking(false);
+            setTrayStatusSafe("ready");
+          };
           window.speechSynthesis.speak(utterance);
         } else {
           setIsSpeaking(false);
+          setTrayStatusSafe("ready");
         }
       };
       audio.play().catch(() => {
         setIsSpeaking(false);
+        setTrayStatusSafe("ready");
       });
     } catch {
       setIsSpeaking(false);
+      setTrayStatusSafe("ready");
     }
-  }, [audioEnabled, speakingRate, stopSpeech]);
+  }, [audioEnabled, speakingRate, stopSpeech, setTrayStatusSafe]);
 
   // Hook into Cortex Custom Runtime
   const cortex = useCortexRuntime({
@@ -155,8 +203,12 @@ export function App() {
       if (cortexBridge) {
         if (task && ["running", "executing"].includes(task.status)) {
           cortexBridge.showHud({ intent: task.intent, steps: task.auditTrail });
+          setTrayStatusSafe("processing");
         } else {
           cortexBridge.hideHud();
+          if (!isSpeaking && !isListening) {
+            setTrayStatusSafe("ready");
+          }
         }
       }
       if (task?.status === "waiting_approval") {
@@ -188,7 +240,33 @@ export function App() {
     }
   };
 
-  // Keyboard shortcuts
+  // Inbound Electron Events (Global Shortcut summon, Tray menu, Palette)
+  useEffect(() => {
+    if (!cortexBridge) return;
+
+    const unsubFocus = cortexBridge.onFocusComposer?.(() => {
+      setFocusTrigger((prev) => prev + 1);
+    });
+    const unsubVoice = cortexBridge.onStartVoiceInteraction?.(() => {
+      handleToggleVoice();
+    });
+    const unsubNew = cortexBridge.onNewThread?.(() => {
+      cortex.startNewThread();
+      setFocusTrigger((prev) => prev + 1);
+    });
+    const unsubSettings = cortexBridge.onOpenSettings?.(() => {
+      setSettingsOpen(true);
+    });
+
+    return () => {
+      if (unsubFocus) unsubFocus();
+      if (unsubVoice) unsubVoice();
+      if (unsubNew) unsubNew();
+      if (unsubSettings) unsubSettings();
+    };
+  }, []);
+
+  // Keyboard shortcuts & Escape to hide
   useEffect(() => {
     function onKeyDown(e) {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
@@ -206,45 +284,160 @@ export function App() {
           setAuditOpen(false);
         } else if (cortex.isRunning) {
           cortex.onCancel();
+        } else if (isFloating && cortexBridge?.hideWindow) {
+          cortexBridge.hideWindow();
         }
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isSpeaking, stopSpeech, settingsOpen, auditOpen, cortex]);
+  }, [isSpeaking, stopSpeech, settingsOpen, auditOpen, cortex, isFloating]);
 
-  // Voice dictation in composer
-  const handleToggleDictation = () => {
+  // Voice Interaction: High-performance 16kHz WAV recording with fallback
+  const handleToggleVoice = useCallback(async () => {
     if (isListening) {
-      // Stop recording
+      // User clicked stop, finish recording
       setIsListening(false);
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-        mediaStreamRef.current = null;
+      setTrayStatusSafe("processing");
+
+      try {
+        if (audioRecorderRef.current) {
+          const wavBlob = await audioRecorderRef.current.stop();
+          setActiveAudioStream(null);
+          audioRecorderRef.current = null;
+
+          if (wavBlob && wavBlob.size > 500) {
+            const result = await cortexApi.audioChat(wavBlob);
+            if (result && result.transcript) {
+              cortex.onNew({ content: [{ type: "text", text: result.transcript }] });
+            } else if (result && result.message) {
+              speakText(result.message, preferredLang);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Audio recording processing notice:", err);
+      } finally {
+        if (!isSpeaking) setTrayStatusSafe("ready");
       }
     } else {
-      // Start Web Speech or audio capture
-      if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
-        const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-        const rec = new SpeechRec();
-        rec.continuous = false;
-        rec.interimResults = false;
-        rec.lang = preferredLang === "auto" ? "en-US" : preferredLang;
-        rec.onstart = () => setIsListening(true);
-        rec.onend = () => setIsListening(false);
-        rec.onerror = () => setIsListening(false);
-        rec.onresult = (e) => {
-          const transcript = e.results[0]?.[0]?.transcript || "";
-          if (transcript) {
-            cortex.onNew({ content: [{ type: "text", text: transcript }] });
-          }
-        };
-        rec.start();
-      } else {
-        alert("Speech recognition is not supported in this browser window.");
+      // Start recording
+      stopSpeech();
+      try {
+        const recorder = new AudioRecorder();
+        audioRecorderRef.current = recorder;
+        const stream = await recorder.start(companionConfigRef.current?.audioInputDevice);
+        setActiveAudioStream(stream);
+        setIsListening(true);
+        setTrayStatusSafe("listening");
+        playChime("activate");
+      } catch (err) {
+        console.warn("Audio recorder initialization notice:", err);
+        // Fallback to Web Speech API
+        if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
+          const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+          const rec = new SpeechRec();
+          rec.continuous = false;
+          rec.interimResults = false;
+          rec.lang = preferredLang === "auto" ? "en-US" : preferredLang;
+          rec.onstart = () => {
+            setIsListening(true);
+            setTrayStatusSafe("listening");
+          };
+          rec.onend = () => {
+            setIsListening(false);
+            setTrayStatusSafe("ready");
+          };
+          rec.onerror = () => {
+            setIsListening(false);
+            setTrayStatusSafe("ready");
+          };
+          rec.onresult = (e) => {
+            const transcript = e.results[0]?.[0]?.transcript || "";
+            if (transcript) {
+              cortex.onNew({ content: [{ type: "text", text: transcript }] });
+            }
+          };
+          rec.start();
+        } else {
+          alert("Microphone permission or audio capture failed: " + err.message);
+        }
       }
     }
-  };
+  }, [isListening, isSpeaking, stopSpeech, setTrayStatusSafe, playChime, cortex, preferredLang, speakText]);
+
+  // On-Device Wake-Word Detection ("Hey Cortex")
+  useEffect(() => {
+    if (!wakeWordEnabled) {
+      if (wakeRecognizerRef.current) {
+        try { wakeRecognizerRef.current.abort(); } catch {}
+        wakeRecognizerRef.current = null;
+      }
+      return;
+    }
+
+    if (isListening || isSpeaking) return;
+    if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) return;
+
+    let isCleanedUp = false;
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const rec = new SpeechRec();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    wakeRecognizerRef.current = rec;
+
+    rec.onresult = (e) => {
+      if (isCleanedUp) return;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = (e.results[i][0]?.transcript || "").toLowerCase().trim();
+        if (
+          text.includes("hey cortex") ||
+          text.includes("cortex") ||
+          text.includes("kortek") ||
+          text.includes("core tech")
+        ) {
+          playChime("wake");
+          try { rec.abort(); } catch {}
+          if (cortexBridge?.focusWindow) {
+            cortexBridge.focusWindow();
+          }
+          handleToggleVoice();
+          break;
+        }
+      }
+    };
+
+    rec.onerror = (err) => {
+      if (!isCleanedUp && wakeWordEnabled && err.error !== "not-allowed") {
+        setTimeout(() => {
+          if (!isCleanedUp && wakeWordEnabled) {
+            try { rec.start(); } catch {}
+          }
+        }, 1500);
+      }
+    };
+
+    rec.onend = () => {
+      if (!isCleanedUp && wakeWordEnabled && !isListening && !isSpeaking) {
+        setTimeout(() => {
+          if (!isCleanedUp && wakeWordEnabled) {
+            try { rec.start(); } catch {}
+          }
+        }, 800);
+      }
+    };
+
+    try {
+      rec.start();
+    } catch {}
+
+    return () => {
+      isCleanedUp = true;
+      try { rec.abort(); } catch {}
+      wakeRecognizerRef.current = null;
+    };
+  }, [wakeWordEnabled, isListening, isSpeaking, playChime, handleToggleVoice]);
 
   // Task Actions (Approve, Deny, Edit Draft)
   const handleApproveTask = async (taskId, approvalHash) => {
@@ -340,7 +533,8 @@ export function App() {
             onToggleFloating={handleToggleFloating}
             theme={theme}
             onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-            onExportMarkdown={handleExportMarkdown}
+            onHideWindow={() => cortexBridge?.hideWindow?.()}
+            trayStatus={trayStatus}
           />
 
           {/* Messages Thread */}
@@ -360,7 +554,7 @@ export function App() {
           />
 
           {/* Composer Footer */}
-          <div className="p-4 bg-gradient-to-t from-[var(--bg)] via-[var(--bg)]/90 to-transparent">
+          <div className="p-3 bg-gradient-to-t from-[var(--bg)] via-[var(--bg)]/90 to-transparent">
             <CortexComposer
               onSend={(text) => cortex.onNew({ content: [{ type: "text", text }] })}
               onStop={cortex.onCancel}
@@ -368,8 +562,12 @@ export function App() {
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenAudit={() => setAuditOpen(true)}
               onNewThread={cortex.startNewThread}
-              onAudioDictate={handleToggleDictation}
+              onAudioDictate={handleToggleVoice}
               isListening={isListening}
+              activeAudioStream={activeAudioStream}
+              isSpeaking={isSpeaking}
+              onStopSpeech={stopSpeech}
+              focusTrigger={focusTrigger}
             />
           </div>
         </div>
@@ -388,6 +586,7 @@ export function App() {
             cortexApi.clearMemories("history");
             cortex.startNewThread();
           }}
+          onPlayChime={playChime}
         />
 
         {/* Audit Modal */}
