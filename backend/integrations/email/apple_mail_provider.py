@@ -184,7 +184,7 @@ class AppleMailProvider(BaseEmailProvider):
     def search_contacts(self, query: str) -> list[dict[str, Any]]:
         contacts = [
             {"name": "Dr. Shanmukha Nagaraj", "email": "hod.cse@rvce.edu.in", "role": "hod", "department": "Computer Science and Engineering (CSE)", "institution": "RV College of Engineering"},
-            {"name": "Prof. Smith", "email": "prof.smith@university.edu", "role": "professor", "department": "Computer Science", "institution": "State University"},
+            {"name": "Prof. Smith", "email": "prof.smith@university.edu", "role": "project guide / professor", "department": "Computer Science", "institution": "State University"},
             {"name": "Sarah Miller", "email": "sarah.manager@techcorp.io", "role": "manager", "department": "Engineering", "institution": "TechCorp"},
             {"name": "Jessica Vance", "email": "recruiter@innovate.ai", "role": "recruiter", "department": "Talent", "institution": "Innovate AI"},
             {"name": "David Clark", "email": "david@clientpartners.com", "role": "client", "department": "Procurement", "institution": "Client Partners"},
@@ -315,6 +315,26 @@ class AppleMailProvider(BaseEmailProvider):
                     "data": record,
                 }
             return {"ok": False, "provider": "apple_mail", "status": "error", "error": err_str, "message": f"Failed to create draft in Apple Mail: {err_str}", "draft_id": None}
+
+    def update_draft(
+        self,
+        draft_id: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        old_subject: str = "",
+    ) -> dict[str, Any]:
+        # Delete prior draft to prevent duplicates in Apple Mail
+        self.delete_draft(recipient, old_subject or subject)
+        res = self.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
+        if res.get("ok"):
+            res["status"] = "draft_updated"
+            res["message"] = f"Draft updated in Apple Mail for {recipient} with subject '{subject}'."
+        return res
 
     def send_message(
         self,

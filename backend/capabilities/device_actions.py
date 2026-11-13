@@ -8,6 +8,7 @@ import time
 import ast
 import json
 import operator
+import plistlib
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,225 @@ APP_ALIASES: dict[str, str] = {
 }
 
 
+class ApplicationDiscovery:
+    """
+    Native macOS Application Discovery & Identification Engine.
+    Discovers installed applications across standard macOS bundle locations,
+    resolves bundle identifiers, handles aliases, distinguishes installed from
+    running applications, and disambiguates multiple candidate matches.
+    """
+
+    STANDARD_APP_DIRS = [
+        Path("/Applications"),
+        Path("/System/Applications"),
+        Path("/System/Applications/Utilities"),
+        Path("/System/Library/CoreServices"),
+        Path.home() / "Applications",
+    ]
+
+    def __init__(self, screen_bridge: Any = None) -> None:
+        self.screen_bridge = screen_bridge
+        self._installed_cache: dict[str, dict[str, Any]] | None = None
+        self._cache_time: float = 0.0
+
+    def scan_installed(self, force: bool = False) -> dict[str, dict[str, Any]]:
+        now = time.time()
+        if not force and self._installed_cache is not None and (now - self._cache_time) < 60.0:
+            return self._installed_cache
+
+        discovered: dict[str, dict[str, Any]] = {}
+        for directory in self.STANDARD_APP_DIRS:
+            if not directory.exists():
+                continue
+            try:
+                for app_bundle in directory.glob("*.app"):
+                    name = app_bundle.stem
+                    bundle_id = None
+                    plist_path = app_bundle / "Contents" / "Info.plist"
+                    if plist_path.exists():
+                        try:
+                            with open(plist_path, "rb") as fp:
+                                pl = plistlib.load(fp)
+                                bundle_id = pl.get("CFBundleIdentifier")
+                                display_name = pl.get("CFBundleDisplayName") or pl.get("CFBundleName")
+                                if display_name and isinstance(display_name, str) and display_name.strip():
+                                    name = display_name.strip()
+                        except Exception:
+                            pass
+                    info = {
+                        "name": name,
+                        "bundle_id": bundle_id,
+                        "path": str(app_bundle),
+                        "is_installed": True,
+                    }
+                    discovered[name.lower()] = info
+                    if bundle_id:
+                        discovered[bundle_id.lower()] = info
+            except Exception:
+                pass
+
+        self._installed_cache = discovered
+        self._cache_time = now
+        return discovered
+
+    def resolve(self, query: str, running_apps: list[Any] | None = None) -> dict[str, Any]:
+        """
+        Resolves query to an application.
+        Distinguishes installed from running applications, handles aliases,
+        and asks for clarification when ambiguous.
+        """
+        raw = (query or "").strip()
+        if not raw:
+            return {
+                "status": "error",
+                "app_name": "",
+                "bundle_id": None,
+                "path": None,
+                "is_installed": False,
+                "is_running": False,
+                "is_active": False,
+                "candidates": [],
+                "message": "No application name provided.",
+            }
+
+        # Check compound phrases like "Finder and show downloads"
+        first_clause = raw
+        if " and " in raw.lower():
+            fc = re.split(r"\s+and\s+", raw, flags=re.IGNORECASE)[0].strip()
+            if fc.lower() in APP_ALIASES or fc.lower() in ("finder", "safari", "mail", "notes", "terminal", "chrome", "whatsapp"):
+                first_clause = fc
+
+        cleaned = first_clause.lower()
+        alias_target = APP_ALIASES.get(cleaned)
+        lookup_name = alias_target or first_clause
+
+        installed = self.scan_installed()
+        running_names: set[str] = set()
+        running_map: dict[str, Any] = {}
+        if running_apps:
+            for app in running_apps:
+                a_name = getattr(app, "name", "")
+                a_bundle = getattr(app, "bundle_id", "")
+                if a_name:
+                    running_names.add(a_name.lower())
+                    running_map[a_name.lower()] = app
+                if a_bundle:
+                    running_names.add(a_bundle.lower())
+                    running_map[a_bundle.lower()] = app
+
+        # 1. Exact match on installed app name or bundle ID
+        target_lower = lookup_name.lower()
+        if target_lower in installed:
+            matched = installed[target_lower]
+            canonical = matched["name"]
+            is_run = (canonical.lower() in running_names) or (matched.get("bundle_id", "").lower() in running_names)
+            return {
+                "status": "resolved",
+                "app_name": canonical,
+                "bundle_id": matched.get("bundle_id"),
+                "path": matched.get("path"),
+                "is_installed": True,
+                "is_running": is_run,
+                "candidates": [canonical],
+                "message": f"Resolved application '{canonical}'.",
+            }
+
+        # 2. Check if already running by name
+        if target_lower in running_names:
+            app_obj = running_map[target_lower]
+            canonical = getattr(app_obj, "name", lookup_name)
+            return {
+                "status": "resolved",
+                "app_name": canonical,
+                "bundle_id": getattr(app_obj, "bundle_id", None),
+                "path": None,
+                "is_installed": True,
+                "is_running": True,
+                "candidates": [canonical],
+                "message": f"Resolved running application '{canonical}'.",
+            }
+
+        # 3. Fuzzy / Substring matches across installed apps
+        candidates: dict[str, dict[str, Any]] = {}
+        for key, info in installed.items():
+            app_name = info["name"]
+            if app_name.lower() in [c.lower() for c in candidates]:
+                continue
+            if target_lower in app_name.lower():
+                candidates[app_name] = info
+
+        if len(candidates) == 1:
+            matched = list(candidates.values())[0]
+            canonical = matched["name"]
+            is_run = (canonical.lower() in running_names) or (matched.get("bundle_id", "").lower() in running_names)
+            return {
+                "status": "resolved",
+                "app_name": canonical,
+                "bundle_id": matched.get("bundle_id"),
+                "path": matched.get("path"),
+                "is_installed": True,
+                "is_running": is_run,
+                "candidates": [canonical],
+                "message": f"Resolved application '{canonical}'.",
+            }
+        elif len(candidates) > 1:
+            # Disambiguate if exactly one is running
+            running_candidates = [
+                info["name"] for info in candidates.values()
+                if info["name"].lower() in running_names
+            ]
+            if len(running_candidates) == 1:
+                canonical = running_candidates[0]
+                matched = candidates[canonical]
+                return {
+                    "status": "resolved",
+                    "app_name": canonical,
+                    "bundle_id": matched.get("bundle_id"),
+                    "path": matched.get("path"),
+                    "is_installed": True,
+                    "is_running": True,
+                    "candidates": [canonical],
+                    "message": f"Disambiguated to running application '{canonical}'.",
+                }
+
+            candidate_names = sorted(list(candidates.keys()))
+            return {
+                "status": "ambiguous",
+                "app_name": raw,
+                "bundle_id": None,
+                "path": None,
+                "is_installed": True,
+                "is_running": False,
+                "candidates": candidate_names,
+                "message": f"Multiple applications match '{raw}': {', '.join(candidate_names)}. Which one would you like to use?",
+            }
+
+        # 4. If query was in APP_ALIASES, trust canonical name
+        if alias_target:
+            return {
+                "status": "resolved",
+                "app_name": alias_target,
+                "bundle_id": None,
+                "path": None,
+                "is_installed": True,
+                "is_running": alias_target.lower() in running_names,
+                "candidates": [alias_target],
+                "message": f"Resolved alias '{raw}' to '{alias_target}'.",
+            }
+
+        # 5. Not installed
+        return {
+            "status": "not_installed",
+            "app_name": raw,
+            "bundle_id": None,
+            "path": None,
+            "is_installed": False,
+            "is_running": False,
+            "candidates": [],
+            "message": f"Application '{raw}' is not installed on this Mac.",
+        }
+
+
 @dataclass(frozen=True)
 class DeviceActionResult:
     ok: bool
@@ -71,12 +291,27 @@ class DeviceActionResult:
 class DeviceAutomation:
     def __init__(self, dry_run: bool | None = None, screenshot_dir: str | None = None) -> None:
         self.system = platform.system().lower()
-        self.dry_run = (os.getenv("CORTEX_EXECUTION_MODE", "live").lower() == "dry-run") if dry_run is None else dry_run
+        self._dry_run = (os.getenv("CORTEX_EXECUTION_MODE", "live").lower() == "dry-run") if dry_run is None else dry_run
         self.screenshot_dir = Path(screenshot_dir or "screenshots")
         self._note_store: dict[str, dict[str, Any]] = {}
         self._browser = None   # lazy-loaded BrowserAutomation
         self._mail = None      # lazy-loaded MailAutomation
         self._whatsapp = None  # lazy-loaded WhatsAppAutomation
+        self._discovery = None # lazy-loaded ApplicationDiscovery
+
+    @property
+    def dry_run(self) -> bool:
+        return self._dry_run
+
+    @dry_run.setter
+    def dry_run(self, val: bool) -> None:
+        self._dry_run = val
+        if self._mail is not None:
+            self._mail.dry_run = val
+            if hasattr(self._mail, "_manager") and self._mail._manager is not None:
+                self._mail._manager.dry_run = val
+                self._mail._manager.gmail.sandbox = val
+                self._mail._manager.apple_mail.dry_run = val
 
     def _get_browser(self):
         if self._browser is None:
@@ -164,6 +399,12 @@ class DeviceAutomation:
         return self._interaction_engine
 
     @property
+    def discovery(self) -> ApplicationDiscovery:
+        if not hasattr(self, "_discovery") or self._discovery is None:
+            self._discovery = ApplicationDiscovery(self.screen_bridge)
+        return self._discovery
+
+    @property
     def app_registry(self):
         if not hasattr(self, "_app_registry") or self._app_registry is None:
             from .app_capability_registry import ApplicationCapabilityRegistry
@@ -248,7 +489,7 @@ class DeviceAutomation:
         if command == TaskCommand.SEARCH_FILES:
             return self._search_files(
                 pattern=str(params.get("pattern", "*")),
-                directory=str(params.get("directory", ".")),
+                directory=str(params.get("directory") or params.get("folder") or "."),
                 limit=int(params.get("limit", 5) if str(params.get("limit", "")).isdigit() else 5),
                 open_finder=bool(params.get("open_finder", False)),
                 sort_by=str(params.get("sort_by", "alphabetical")),
@@ -284,10 +525,19 @@ class DeviceAutomation:
                 task_id=str(params.get("task_id", "")),
                 draft_only=bool(params.get("draft_only", False)),
             )
+        if command == TaskCommand.OPEN_APP:
+            return self._open_app(
+                str(params.get("appName") or params.get("app_name") or params.get("target") or ""),
+                folder=str(params.get("folder") or ""),
+            )
+        if command == TaskCommand.CLOSE_APP:
+            return self._close_app(str(params.get("appName") or params.get("app_name") or params.get("target") or ""))
+        if command == TaskCommand.FOCUS_APP:
+            return self._focus_app(str(params.get("appName") or params.get("app_name") or params.get("target") or ""))
         if command == TaskCommand.CLOSE_WINDOW:
-            return self._close_window(str(params.get("appName") or params.get("target") or ""))
+            return self._close_window(str(params.get("appName") or params.get("app_name") or params.get("target") or ""))
         if command == TaskCommand.QUIT_APP:
-            return self._close_app(str(params.get("appName") or params.get("target") or ""), force=bool(params.get("force", False)))
+            return self._close_app(str(params.get("appName") or params.get("app_name") or params.get("target") or ""), force=bool(params.get("force", False)))
         if command == TaskCommand.INSPECT_APP:
             return self._inspect_app(str(params.get("appName") or params.get("target") or ""))
         if (command in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP)) and (params.get("channel") == "whatsapp" or params.get("phone")):
@@ -302,15 +552,6 @@ class DeviceAutomation:
 
         if self.dry_run:
             return DeviceActionResult(True, f"Dry-run completed for {command.value}.", {"params": params})
-        if command == TaskCommand.OPEN_APP:
-            return self._open_app(
-                str(params.get("appName") or params.get("target") or ""),
-                folder=str(params.get("folder") or ""),
-            )
-        if command == TaskCommand.CLOSE_APP:
-            return self._close_app(str(params.get("appName") or params.get("target") or ""))
-        if command == TaskCommand.FOCUS_APP:
-            return self._focus_app(str(params.get("appName") or params.get("target") or ""))
         if command == TaskCommand.TYPE_TEXT:
             return self._type_text(str(params.get("text") or ""), str(params.get("appName") or ""))
         if command == TaskCommand.KEYSTROKE:
@@ -421,6 +662,35 @@ class DeviceAutomation:
             bcc=bcc,
         )
 
+    def update_email_draft(
+        self,
+        draft_id: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        old_subject: str = "",
+    ) -> DeviceActionResult:
+        mail_inst = self._get_mail()
+        if hasattr(mail_inst, "update_draft"):
+            result = mail_inst.update_draft(
+                draft_id=draft_id,
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                account=account,
+                attachments=attachments,
+                cc=cc,
+                bcc=bcc,
+                old_subject=old_subject,
+            )
+        else:
+            result = mail_inst.draft_mail(recipient, subject, body, account=account)
+        return DeviceActionResult(result.get("ok", False), result.get("message", ""), result.get("data"))
+
     def _draft_mail(
         self,
         recipient: str,
@@ -474,12 +744,19 @@ class DeviceAutomation:
     def resolve_app_name(self, app_name: str) -> str:
         """Resolve recognized application names and aliases to their canonical OS application title."""
         raw = (app_name or "").strip()
+        if not raw:
+            return ""
         # Handle compound requests like "Finder and list my downloads" or "Safari and search"
         if " and " in raw.lower():
             first_clause = re.split(r"\s+and\s+", raw, flags=re.IGNORECASE)[0].strip()
             if first_clause.lower() in APP_ALIASES or first_clause.lower() in ("finder", "safari", "mail", "notes", "terminal", "chrome", "whatsapp"):
                 raw = first_clause
         cleaned = raw.lower()
+        if cleaned in APP_ALIASES:
+            return APP_ALIASES[cleaned]
+        res = self.discovery.resolve(raw)
+        if res.get("status") == "resolved" and res.get("app_name"):
+            return res["app_name"]
         return APP_ALIASES.get(cleaned, raw)
 
     def is_app_running(self, app_name: str) -> bool:
@@ -487,20 +764,38 @@ class DeviceAutomation:
         canonical = self.resolve_app_name(app_name)
         if not canonical:
             return False
-        if self.dry_run or os.getenv("PYTEST_CURRENT_TEST"):
-            # Predictable in automated test mode unless real process inspection requested
+        if self.dry_run:
+            if hasattr(self, "_mock_running_apps"):
+                return canonical.lower() in [a.lower() for a in self._mock_running_apps]
+            if hasattr(self.screen_bridge, "list_running_apps"):
+                for a in self.screen_bridge.list_running_apps():
+                    if a.name.lower() == canonical.lower() or (a.bundle_id and a.bundle_id.lower() == canonical.lower()):
+                        return True
             return False
+
         if self.system == "darwin":
+            # 1. Native screen bridge check via cortex_screen_helper (fast Cocoa NSRunningApplication)
+            try:
+                running = self.screen_bridge.list_running_apps()
+                for app in running:
+                    if app.name.lower() == canonical.lower() or (app.bundle_id and app.bundle_id.lower() == canonical.lower()):
+                        return True
+            except Exception:
+                pass
+            # 2. AppleScript check via System Events
             script = f'tell application "System Events" to (name of processes) contains "{canonical}"'
             try:
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=2.0)
-                return "true" in res.stdout.lower()
+                if "true" in res.stdout.lower():
+                    return True
             except Exception:
-                try:
-                    res = subprocess.run(["pgrep", "-if", canonical], capture_output=True, text=True)
-                    return res.returncode == 0
-                except Exception:
-                    return False
+                pass
+            # 3. pgrep fallback
+            try:
+                res = subprocess.run(["pgrep", "-if", canonical], capture_output=True, text=True)
+                return res.returncode == 0
+            except Exception:
+                return False
         elif self.system == "windows":
             try:
                 script = f"Get-Process -Name '{canonical}' -ErrorAction SilentlyContinue"
@@ -510,10 +805,29 @@ class DeviceAutomation:
                 return False
         return False
 
+    def is_app_active(self, app_name: str) -> bool:
+        """Determines whether target application is currently frontmost and active."""
+        canonical = self.resolve_app_name(app_name)
+        if not canonical:
+            return False
+        if self.dry_run:
+            if hasattr(self, "_mock_active_app"):
+                return self._mock_active_app.lower() == canonical.lower()
+            front = self.screen_bridge.get_frontmost_app()
+            return bool(front and (front.name.lower() == canonical.lower() or (front.bundle_id and front.bundle_id.lower() == canonical.lower())))
+
+        if self.system == "darwin":
+            front = self.screen_bridge.get_frontmost_app()
+            if front and (front.name.lower() == canonical.lower() or (front.bundle_id and front.bundle_id.lower() == canonical.lower())):
+                return True
+        return False
+
     def has_unsaved_changes(self, app_name: str) -> bool:
         """Inspects application windows to detect unsaved work before closing or quitting."""
         canonical = self.resolve_app_name(app_name)
-        if not canonical or self.dry_run or os.getenv("PYTEST_CURRENT_TEST"):
+        if not canonical or self.dry_run:
+            if hasattr(self, "_mock_unsaved_changes"):
+                return canonical.lower() in [a.lower() for a in self._mock_unsaved_changes]
             return False
         if self.system == "darwin":
             script = (
@@ -541,7 +855,43 @@ class DeviceAutomation:
     def _open_app(self, app_name: str, folder: str = "") -> DeviceActionResult:
         if not app_name:
             return DeviceActionResult(False, "No app name was provided.")
-        canonical = self.resolve_app_name(app_name)
+
+        resolution = self.discovery.resolve(app_name, running_apps=self.screen_bridge.list_running_apps())
+        if resolution.get("status") == "ambiguous":
+            return DeviceActionResult(
+                False,
+                resolution["message"],
+                {"isAmbiguous": True, "candidates": resolution.get("candidates", []), "appName": app_name},
+            )
+        if not self.dry_run and resolution.get("status") == "not_installed":
+            if not folder:
+                return DeviceActionResult(
+                    False,
+                    f"Cannot open '{app_name}': Application is not installed on this Mac.",
+                    {"appName": app_name, "isInstalled": False},
+                )
+
+        canonical = resolution.get("app_name") or self.resolve_app_name(app_name)
+        bundle_id = resolution.get("bundle_id")
+
+        if self.dry_run:
+            if self.is_app_running(canonical):
+                return DeviceActionResult(
+                    True,
+                    f"Focused already running application {canonical}.",
+                    {
+                        "appName": canonical,
+                        "bundleId": bundle_id,
+                        "wasRunning": True,
+                        "isActive": True,
+                        "mechanism": "activate_existing",
+                    },
+                )
+            return DeviceActionResult(
+                True,
+                f"Opened {canonical}.",
+                {"appName": canonical, "wasRunning": False, "isActive": True, "mechanism": "mock_launch"},
+            )
 
         if canonical == "Finder":
             if self.system == "darwin":
@@ -549,28 +899,82 @@ class DeviceAutomation:
                     if folder:
                         target = Path.home() / "Downloads" if "download" in folder.lower() else Path(folder).expanduser()
                         subprocess.run(["open", "-a", "Finder", str(target)], capture_output=True, text=True, check=False)
-                        return DeviceActionResult(True, f"Opened Finder in {folder}.", {"appName": "Finder", "folder": str(target)})
+                        return DeviceActionResult(True, f"Opened Finder in {folder}.", {"appName": "Finder", "folder": str(target), "wasRunning": True, "isActive": True})
                     subprocess.run(["open", "-a", "Finder"], capture_output=True, text=True, check=False)
-                    return DeviceActionResult(True, "Opened Finder.", {"appName": "Finder", "wasRunning": self.is_app_running("Finder")})
+                    return DeviceActionResult(True, "Opened Finder.", {"appName": "Finder", "wasRunning": True, "isActive": True})
                 except Exception as e:
                     return DeviceActionResult(False, f"Failed to open Finder: {e}")
 
         # Check if already running -> focus it instead of duplicating
         if self.is_app_running(canonical):
-            self._focus_app(canonical)
+            focus_res = self._focus_app(canonical)
             return DeviceActionResult(
                 True,
                 f"Focused already running application {canonical}.",
-                {"appName": canonical, "wasRunning": True},
+                {
+                    "appName": canonical,
+                    "bundleId": bundle_id,
+                    "wasRunning": True,
+                    "isActive": focus_res.ok,
+                    "mechanism": "activate_existing",
+                },
+            )
+
+        if self.dry_run:
+            return DeviceActionResult(
+                True,
+                f"Opened {canonical}.",
+                {"appName": canonical, "wasRunning": False, "isActive": True, "mechanism": "mock_launch"},
             )
 
         if self.system == "darwin":
             try:
-                res = subprocess.run(["open", "-a", canonical], capture_output=True, text=True)
+                cmd = ["open", "-a", canonical]
+                res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode != 0:
                     err_msg = res.stderr.strip() or "Unable to find application."
-                    return DeviceActionResult(False, f"Cannot open {canonical}: {err_msg}")
-                return DeviceActionResult(True, f"Opened {canonical}.", {"appName": canonical, "wasRunning": False})
+                    return DeviceActionResult(False, f"Cannot open {canonical}: {err_msg}", {"appName": canonical})
+
+                # Polling verification of process and foreground state
+                is_running = False
+                is_active = False
+                pid = None
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    if self.is_app_running(canonical):
+                        is_running = True
+                        break
+                    time.sleep(0.1)
+
+                if is_running:
+                    front = self.screen_bridge.get_frontmost_app()
+                    if front and (front.name.lower() == canonical.lower() or (bundle_id and front.bundle_id == bundle_id)):
+                        is_active = True
+                        pid = front.pid
+                    else:
+                        for a in self.screen_bridge.list_running_apps():
+                            if a.name.lower() == canonical.lower() or (bundle_id and a.bundle_id == bundle_id):
+                                pid = a.pid
+                                break
+                    return DeviceActionResult(
+                        True,
+                        f"Opened {canonical}.",
+                        {
+                            "appName": canonical,
+                            "bundleId": bundle_id,
+                            "wasRunning": False,
+                            "isRunning": True,
+                            "isActive": is_active,
+                            "pid": pid,
+                            "mechanism": "open_cli",
+                        },
+                    )
+                else:
+                    return DeviceActionResult(
+                        False,
+                        f"Launched {canonical}, but the application process did not appear.",
+                        {"appName": canonical, "wasRunning": False, "isRunning": False},
+                    )
             except Exception as e:
                 return DeviceActionResult(False, f"Failed to open {canonical}: {e}")
         elif self.system == "windows":
@@ -589,12 +993,47 @@ class DeviceAutomation:
     def _focus_app(self, app_name: str) -> DeviceActionResult:
         if not app_name:
             return DeviceActionResult(False, "No app name was provided.")
-        canonical = self.resolve_app_name(app_name)
+        resolution = self.discovery.resolve(app_name, running_apps=self.screen_bridge.list_running_apps())
+        if resolution.get("status") == "ambiguous":
+            return DeviceActionResult(
+                False,
+                resolution["message"],
+                {"isAmbiguous": True, "candidates": resolution.get("candidates", []), "appName": app_name},
+            )
+
+        canonical = resolution.get("app_name") or self.resolve_app_name(app_name)
+        bundle_id = resolution.get("bundle_id")
+
+        if self.dry_run:
+            return DeviceActionResult(True, f"Focused {canonical}.", {"appName": canonical, "isActive": True})
+
+        # Check if app is running before attempting to bring it to foreground
+        if not self.is_app_running(canonical):
+            return DeviceActionResult(
+                False,
+                f"Cannot bring {canonical} to front: Application is not currently running.",
+                {"appName": canonical, "isRunning": False, "isActive": False},
+            )
+
         if self.system == "darwin":
             try:
                 script = f'tell application "{canonical}" to activate'
                 subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
-                return DeviceActionResult(True, f"Focused {canonical}.", {"appName": canonical})
+
+                is_active = False
+                deadline = time.time() + 1.5
+                while time.time() < deadline:
+                    front = self.screen_bridge.get_frontmost_app()
+                    if front and (front.name.lower() == canonical.lower() or (bundle_id and front.bundle_id == bundle_id)):
+                        is_active = True
+                        break
+                    time.sleep(0.1)
+
+                return DeviceActionResult(
+                    True,
+                    f"Focused {canonical}.",
+                    {"appName": canonical, "isActive": is_active, "mechanism": "apple_events_activate"},
+                )
             except Exception as e:
                 return DeviceActionResult(False, f"Could not focus {canonical}: {e}")
         elif self.system == "windows":
@@ -631,7 +1070,18 @@ class DeviceAutomation:
     def _close_app(self, app_name: str, force: bool = False) -> DeviceActionResult:
         if not app_name:
             return DeviceActionResult(False, "No app name was provided.")
-        canonical = self.resolve_app_name(app_name)
+        resolution = self.discovery.resolve(app_name, running_apps=self.screen_bridge.list_running_apps())
+        canonical = resolution.get("app_name") or self.resolve_app_name(app_name)
+
+        if self.dry_run:
+            return DeviceActionResult(True, f"Closed {canonical}.", {"appName": canonical, "closed": True})
+
+        if not self.is_app_running(canonical):
+            return DeviceActionResult(
+                True,
+                f"{canonical} is not running.",
+                {"appName": canonical, "wasRunning": False, "closed": True},
+            )
 
         if not force and self.has_unsaved_changes(canonical):
             return DeviceActionResult(
@@ -642,9 +1092,29 @@ class DeviceAutomation:
 
         if self.system == "darwin":
             try:
-                script = f'tell application "{canonical}" to quit'
-                subprocess.run(["osascript", "-e", script], capture_output=True)
-                return DeviceActionResult(True, f"Closed {canonical}.", {"appName": canonical})
+                if force:
+                    subprocess.run(["pkill", "-9", "-if", canonical], capture_output=True)
+                else:
+                    script = f'tell application "{canonical}" to quit'
+                    subprocess.run(["osascript", "-e", script], capture_output=True)
+
+                # Polling verification of termination
+                terminated = False
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    if not self.is_app_running(canonical):
+                        terminated = True
+                        break
+                    time.sleep(0.1)
+
+                if terminated:
+                    return DeviceActionResult(True, f"Closed {canonical}.", {"appName": canonical, "closed": True})
+                else:
+                    return DeviceActionResult(
+                        False,
+                        f"Application {canonical} refused to close or is still running (may require saving documents).",
+                        {"appName": canonical, "closed": False, "isStillRunning": True},
+                    )
             except Exception as e:
                 return DeviceActionResult(False, f"Could not quit {canonical}: {e}")
         elif self.system == "windows":
@@ -666,14 +1136,26 @@ class DeviceAutomation:
                 return DeviceActionResult(False, f"Could not quit {canonical}: {e}")
 
     def _inspect_app(self, app_name: str) -> DeviceActionResult:
-        canonical = self.resolve_app_name(app_name)
+        if not app_name:
+            return DeviceActionResult(False, "No app name was provided.")
+        resolution = self.discovery.resolve(app_name, running_apps=self.screen_bridge.list_running_apps())
+        canonical = resolution.get("app_name") or self.resolve_app_name(app_name)
+        bundle_id = resolution.get("bundle_id")
+        is_installed = resolution.get("is_installed", True)
+
         is_running = self.is_app_running(canonical)
+        front = self.screen_bridge.get_frontmost_app()
+        is_active = bool(front and (front.name.lower() == canonical.lower() or (bundle_id and front.bundle_id == bundle_id)))
+
         data = {
             "appName": canonical,
+            "bundleId": bundle_id,
+            "isInstalled": is_installed,
             "isRunning": is_running,
+            "isActive": is_active,
             "system": self.system,
         }
-        if is_running and self.system == "darwin":
+        if is_running and self.system == "darwin" and not self.dry_run:
             script = (
                 f'tell application "System Events"\n'
                 f'  tell process "{canonical}"\n'
@@ -688,8 +1170,15 @@ class DeviceAutomation:
                 data["windowCount"] = win_count
             except Exception:
                 data["windowCount"] = 1
+        elif is_running:
+            data["windowCount"] = 1
+
         data["capabilities"] = self.app_registry.inspect_app_capabilities(canonical)
-        msg = f"{canonical} is running." if is_running else f"{canonical} is not running."
+        if is_running:
+            state_str = "active and in the foreground" if is_active else "running in the background"
+            msg = f"{canonical} is currently {state_str}."
+        else:
+            msg = f"{canonical} is not running."
         return DeviceActionResult(True, msg, data)
 
     def _observe_screen(self, capture: bool = False, run_ocr: bool = False, pid: int | None = None, params: dict[str, Any] | None = None) -> DeviceActionResult:
@@ -784,17 +1273,21 @@ class DeviceAutomation:
         seen_labels: set[str] = set()
 
         for el in ax.elements:
+            if getattr(el, "role", None) and hasattr(el.role, "value") and el.role.value.lower() in ("unknown", "-1"):
+                continue
             label = (el.title or el.description or el.value or "").strip()
             if not label or label in seen_labels:
                 continue
-            if label.startswith(el.role.value + "_"):
+            if label.lower() in ("-1", "unknown", "[unknown]", "none", "null") or label == "-1":
+                continue
+            if hasattr(el.role, "value") and label.startswith(el.role.value + "_"):
                 continue
             # Redact/skip sensitive content
             if any(s in label.lower() for s in ("password", "secret", "token", "private_key", "bearer")):
                 continue
             seen_labels.add(label)
             role_name = el.role.value.replace("_", " ").capitalize()
-            visible_elements.append(f"[{role_name}] {label}")
+            visible_elements.append(f"[{role_name}] {label} (source: accessibility)")
             element_dicts.append({
                 "role": el.role.value,
                 "label": label,
@@ -825,11 +1318,13 @@ class DeviceAutomation:
                             t = o.text.strip()
                             if not t or t in seen_labels:
                                 continue
+                            if t.lower() in ("-1", "unknown", "[unknown]", "none", "null") or t == "-1":
+                                continue
                             if any(s in t.lower() for s in ("password", "secret", "token", "private_key")):
                                 continue
                             seen_labels.add(t)
                             # Ground strictly as Text, not as button/control
-                            visible_elements.append(f"[Text] {t}")
+                            visible_elements.append(f"[Text] {t} (source: vision_ocr)")
                             element_dicts.append({
                                 "role": "text",
                                 "label": t,

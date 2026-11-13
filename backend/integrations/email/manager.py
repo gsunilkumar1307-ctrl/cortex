@@ -87,6 +87,34 @@ class MailProviderManager:
         provider = self.get_provider_for_account(account)
         return provider.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
 
+    def update_draft(
+        self,
+        draft_id: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        old_subject: str = "",
+    ) -> dict[str, Any]:
+        provider = self.get_provider_for_account(account)
+        if hasattr(provider, "update_draft"):
+            return provider.update_draft(
+                draft_id=draft_id,
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                account=account,
+                attachments=attachments,
+                cc=cc,
+                bcc=bcc,
+                old_subject=old_subject,
+            )
+        provider.delete_draft(recipient, old_subject or subject)
+        return provider.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
+
     def send_message(
         self,
         recipient: str,

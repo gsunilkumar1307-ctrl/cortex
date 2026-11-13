@@ -41,7 +41,10 @@ class DesktopTool(BaseTool):
     def execute(self, inputs: dict[str, Any], context: TaskContext | None = None) -> ExecutionResult:
         start_time = time.time()
         command = inputs.get("command")
-        params = inputs.get("params", {})
+        params = dict(inputs.get("params") or {})
+        for k, v in inputs.items():
+            if k not in ("command", "params", "step_id") and k not in params:
+                params[k] = v
         step_id = inputs.get("step_id", "desktop-step")
 
         if not self.automation:
@@ -67,7 +70,10 @@ class DesktopTool(BaseTool):
 
     def observe(self, inputs: dict[str, Any], execution_result: ExecutionResult) -> Observation:
         command = inputs.get("command")
-        params = inputs.get("params", {})
+        params = dict(inputs.get("params") or {})
+        for k, v in inputs.items():
+            if k not in ("command", "params", "step_id") and k not in params:
+                params[k] = v
         cmd_str = command.value if isinstance(command, TaskCommand) else str(command)
 
         state: dict[str, Any] = {"command": cmd_str, "ok": execution_result.ok}
@@ -78,6 +84,22 @@ class DesktopTool(BaseTool):
             state["task_verified"] = self.automation.verify_task_created(title)
 
         elif cmd_str == "open_app" and self.automation and hasattr(self.automation, "is_app_running"):
+            app_name = params.get("appName", "")
+            state["app_running"] = self.automation.is_app_running(app_name)
+            if hasattr(self.automation, "is_app_active"):
+                state["app_active"] = self.automation.is_app_active(app_name)
+
+        elif cmd_str == "focus_app" and self.automation:
+            app_name = params.get("appName", "")
+            state["app_running"] = self.automation.is_app_running(app_name) if hasattr(self.automation, "is_app_running") else True
+            if hasattr(self.automation, "is_app_active"):
+                state["app_active"] = self.automation.is_app_active(app_name)
+
+        elif cmd_str == "close_app" and self.automation and hasattr(self.automation, "is_app_running"):
+            app_name = params.get("appName", "")
+            state["app_running"] = self.automation.is_app_running(app_name)
+
+        elif cmd_str == "inspect_app" and self.automation and hasattr(self.automation, "is_app_running"):
             app_name = params.get("appName", "")
             state["app_running"] = self.automation.is_app_running(app_name)
 
@@ -106,6 +128,71 @@ class DesktopTool(BaseTool):
             )
 
         cmd_str = observation.state_data.get("command", "")
+        is_dry = bool(getattr(self.automation, "dry_run", False)) or "dry-run" in (execution_result.message or "").lower()
+
+        if cmd_str == "open_app":
+            app_name = inputs.get("params", {}).get("appName", "")
+            app_running = observation.state_data.get("app_running", True)
+            if not is_dry and not app_running:
+                return VerificationResult(
+                    verified=False,
+                    confidence=1.0,
+                    evidence=f"Application failed to open: {execution_result.error or execution_result.message}",
+                    error=execution_result.error,
+                )
+            evidence = f"Verified application '{app_name}' is running."
+            if observation.state_data.get("app_active"):
+                evidence += " In foreground."
+            return VerificationResult(
+                verified=True,
+                confidence=0.95,
+                evidence=evidence,
+            )
+
+        if cmd_str == "focus_app":
+            app_name = inputs.get("params", {}).get("appName", "")
+            if not execution_result.ok:
+                return VerificationResult(
+                    verified=False,
+                    confidence=1.0,
+                    evidence=f"Focus failed: {execution_result.error or execution_result.message}",
+                    error=execution_result.error,
+                )
+            return VerificationResult(
+                verified=True,
+                confidence=0.95,
+                evidence=f"Verified application '{app_name}' brought to foreground.",
+            )
+
+        if cmd_str == "close_app":
+            app_name = inputs.get("params", {}).get("appName", "")
+            if not execution_result.ok:
+                return VerificationResult(
+                    verified=False,
+                    confidence=1.0,
+                    evidence=f"Application close failed: {execution_result.error or execution_result.message}",
+                    error=execution_result.error,
+                )
+            app_running = observation.state_data.get("app_running", False)
+            if not is_dry and app_running:
+                return VerificationResult(
+                    verified=False,
+                    confidence=0.9,
+                    evidence=f"Application '{app_name}' is still running and refused to close.",
+                )
+            return VerificationResult(
+                verified=True,
+                confidence=1.0,
+                evidence=f"Verified application '{app_name}' process terminated.",
+            )
+
+        if cmd_str == "inspect_app":
+            return VerificationResult(
+                verified=execution_result.ok,
+                confidence=1.0,
+                evidence=execution_result.message,
+            )
+
         if cmd_str == "personal_task_create":
             verified = observation.state_data.get("task_verified", True)
             return VerificationResult(

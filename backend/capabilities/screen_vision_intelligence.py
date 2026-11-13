@@ -66,7 +66,7 @@ class MultimodalVisualIntelligenceEngine:
 
     def __init__(self, api_key: Optional[str] = None) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
-        self.model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
     def sanitize_untrusted_screen_text(self, text: str) -> tuple[str, bool]:
         """Scans environmental screen text for prompt-injection markers."""

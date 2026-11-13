@@ -955,6 +955,8 @@ def is_self_capability_query(text: str) -> bool:
         return False
     if re.search(r"\bcapabilities\s+of\s+(?:gpt-?4|claude|chatgpt|siri|alexa|gemini|python|rust|macos)\b", t):
         return False
+    if re.search(r"\b(?:latest|recent|news|current)\s+(?:developments|breakthroughs|updates|news)\b", t):
+        return False
 
     # 1. Broad capability inquiries: "what can you...", "what are your...", "what can cortex..."
     if re.search(r"\b(?:what\s+(?:can|could)\s+you\s+(?:actually\s+)?(?:do|help\s+(?:me\s+)?with))\b", t):
@@ -967,7 +969,19 @@ def is_self_capability_query(text: str) -> bool:
         return True
     if re.search(r"\b(?:tell\s+me\s+)?(?:what\s+you\s+can\s+do|your\s+capabilities)\b", t):
         return True
-    if re.search(r"\b(?:five|5)\s+specific\s+things\s+(?:you\s+can\s+(?:actually\s+)?do|that\s+cortex\s+can\s+do|on\s+this\s+mac)\b", t):
+    if re.search(r"\b(?:five|5|\d+)\s+specific\s+things\b", t) and any(w in t for w in ("you can", "cortex", "mac", "help", "do on")):
+        return True
+
+    # Inquiries about verified capabilities / execution evidence in this session
+    if re.search(r"\b(?:which|what)\s+capabilities\s+(?:have\s+you|are)\s+(?:actually\s+)?verified\b", t):
+        return True
+    if re.search(r"\b(?:actually\s+)?verified\s+in\s+this\s+session\b", t):
+        return True
+    if re.search(r"\bwhat\s+(?:capabilities\s+)?have\s+you\s+(?:actually\s+)?verified\b", t):
+        return True
+    if re.search(r"\bwithout\s+opening\s+anything\b", t) and any(w in t for w in ("capabilities", "verified", "verify")):
+        return True
+    if re.search(r"\bexecution\s+evidence\b", t):
         return True
 
     # 2. App control inquiries: "which apps can you control", "what apps can you..."
@@ -1047,7 +1061,11 @@ def command_from_intent(intent: str) -> TaskCommand:
         return TaskCommand.NOTIFICATION
     if "remind" in text or "reminder" in text:
         return TaskCommand.REMINDER
-    if text.startswith(("focus ", "switch to ", "bring up ", "activate ")):
+    if (
+        text.startswith(("focus ", "switch to ", "bring up ", "activate "))
+        or bool(re.search(r"\bbring\s+(.+?)\s+to\s+(?:the\s+)?(?:front|foreground)\b", text, re.IGNORECASE))
+        or text.endswith(("to the front", "to the front.", "to the foreground", "to the foreground."))
+    ):
         return TaskCommand.FOCUS_APP
     if any(phrase in text for phrase in ("what is on my screen", "what's on my screen", "read my screen", "describe my screen", "look at my screen", "analyze screen", "check screen", "see my screen")):
         return TaskCommand.SCREEN_VISION
@@ -1058,8 +1076,16 @@ def command_from_intent(intent: str) -> TaskCommand:
             "observe my screen", "observe the screen", "inspect my screen", "inspect the screen",
             "scan my screen", "scan the screen", "check my screen", "check the screen",
             "active application, active window", "five visible elements", "tell me the active application",
+            "what application am i currently using", "which application is active", "what app am i using",
+            "determine which application is active", "report the active window title", "active window title",
+            "what window is currently open", "what window is open", "what window is active",
         ))
         or bool(re.search(r"\b(?:observe|inspect|scan)\s+(?:my\s+|the\s+)?screen\b", text, re.IGNORECASE))
+        or bool(re.search(r"\b(?:what|which)\s+application\s+(?:am\s+i\s+currently\s+using|is\s+active|is\s+frontmost)\b", text, re.IGNORECASE))
+        or bool(re.search(r"\b(?:what|which)\s+window\s+(?:is\s+currently\s+open|is\s+open|is\s+active|is\s+frontmost)\b", text, re.IGNORECASE))
+        or bool(re.search(r"\bdetermine\s+which\s+application\s+is\s+active\b", text, re.IGNORECASE))
+        or bool(re.search(r"\breport\s+(?:the\s+)?active\s+window(?:\s+title)?\b", text, re.IGNORECASE))
+        or bool(re.search(r"\b(?:observe|describe|show|tell\s+me)\s+(?:five|5|\d+)?\s*(?:visible\s+)?(?:screen\s+)?elements\b", text, re.IGNORECASE))
         or any(w in text for w in ("ನನ್ನ ಸ್ಕ್ರೀನ್ ನೋಡು", "ಸ್ಕ್ರೀನ್ ವೀಕ್ಷಿಸು", "मेरी स्क्रीन देखो", "स्क्रीन का निरीक्षण करो", "எனது திரையைப் பார்", "నా స్క్రీన్ చూడండి"))
     ):
         return TaskCommand.OBSERVE_SCREEN
@@ -1103,9 +1129,10 @@ def command_from_intent(intent: str) -> TaskCommand:
     if text.startswith(("send email ", "send an email ", "send mail ", "send a mail ", "email to ")) or (text.startswith("email ") and (" saying " in text or " subject " in text or " with subject " in text)):
         return TaskCommand.SEND_MAIL
     if (
-        re.search(r"\b(?:draft|write|compose|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+)?(?:draft\s+)?(?:email|mail)\b", text)
+        re.search(r"\b(?:draft|write|compose|prepare|create)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+)?(?:draft\s+)?(?:email|mail|draft)\b", text)
         or text.startswith((
             "draft email ", "draft an email ", "create draft email ", "create a draft email ",
+            "create a professional draft", "create a formal draft", "create a draft",
             "write a draft email ", "write draft email ", "draft mail ", "draft a mail ",
             "prepare an email ", "compose email ", "compose an email ",
             "write a polite email", "write an email", "write email", "write mail", "write a mail"
@@ -1124,7 +1151,12 @@ def command_from_intent(intent: str) -> TaskCommand:
         return TaskCommand.MENU_ITEM
     if text.startswith(("close window", "close the window", "shut window")):
         return TaskCommand.CLOSE_WINDOW
-    if text.startswith(("is running", "is app running", "inspect app", "check app")):
+    if (
+        text.startswith(("is running", "is app running", "inspect app", "check app"))
+        or bool(re.search(r"\bis\s+([a-z0-9\s_-]+?)\s+running\b", text, re.IGNORECASE))
+        or bool(re.search(r"\bcheck\s+(?:whether|if)\s+([a-z0-9\s_-]+?)\s+(?:is\s+)?running\b", text, re.IGNORECASE))
+        or bool(re.search(r"\bcheck\s+whether\s+([a-z0-9\s_-]+?)\s+running\b", text, re.IGNORECASE))
+    ):
         return TaskCommand.INSPECT_APP
     if text.startswith(("close ", "exit ", "quit ")) or any(phrase in text for phrase in ("close app", "close application", "quit app", "quit application")):
         return TaskCommand.CLOSE_APP

@@ -47,6 +47,8 @@ class EmailDraft:
     cc: list[str] = field(default_factory=list)
     bcc: list[str] = field(default_factory=list)
     approval_hash: str = ""
+    draft_id: str = ""
+    provider: str = ""
 
     def __post_init__(self) -> None:
         if not self.approval_hash:
@@ -116,6 +118,8 @@ class EmailDraft:
             "senderAccount": self.sender_account,
             "attachments": self.attachments,
             "approvalHash": self.approval_hash or self.compute_hash(),
+            "draftId": self.draft_id,
+            "provider": self.provider,
         }
 
 
@@ -359,17 +363,32 @@ class ProfessionalEmailEngine:
         """Separates the user's meta-command to Cortex from the intended message payload."""
         text = message.strip()
 
-        # Extract Account
+        # Extract Provider / Service directive (e.g. "in Gmail", "using Gmail", "via Gmail", "draft a Gmail", "in Apple Mail")
         account = ""
-        acc_m = re.search(r"\b(?:from|using)\s+account\s+[\"']?([^\"'\s,;]+(?:\s+[^\"'\s,;]+)*?)[\"']?(?=\s+(?:to|with|saying|subject|attach|cc|bcc|regarding|about)|$)", text, re.IGNORECASE)
-        if acc_m:
-            account = acc_m.group(1).strip()
-            text = text[:acc_m.start()] + " " + text[acc_m.end():]
-        else:
-            acc_m2 = re.search(r"\b(?:from|using)\s+(?:my\s+)?([a-zA-Z0-9_\-@. ]+?)\s+account(?=\s+(?:to|with|saying|subject|attach|cc|bcc|regarding|about)|$)", text, re.IGNORECASE)
-            if acc_m2:
-                account = acc_m2.group(1).strip()
-                text = text[:acc_m2.start()] + " " + text[acc_m2.end():]
+        if re.search(r"\b(?:in|using|via|on|through)\s+gmail\b", text, re.IGNORECASE):
+            account = "Gmail Account (user@gmail.com)"
+            text = re.sub(r"\b(?:in|using|via|on|through)\s+gmail\b", "", text, flags=re.IGNORECASE)
+        elif re.search(r"\b(?:draft|send|create|write)\s+(?:an?\s+)?gmail\b", text, re.IGNORECASE):
+            account = "Gmail Account (user@gmail.com)"
+            text = re.sub(r"\b(?:draft|send|create|write)\s+(?:an?\s+)?gmail\b", "draft an email", text, flags=re.IGNORECASE)
+        elif re.search(r"\b(?:in|using|via|on|through)\s+apple\s+mail\b", text, re.IGNORECASE):
+            account = "Primary Account"
+            text = re.sub(r"\b(?:in|using|via|on|through)\s+apple\s+mail\b", "", text, flags=re.IGNORECASE)
+        elif re.search(r"\b(?:draft|send|create|write)\s+(?:an?\s+)?apple\s+mail\b", text, re.IGNORECASE):
+            account = "Primary Account"
+            text = re.sub(r"\b(?:draft|send|create|write)\s+(?:an?\s+)?apple\s+mail\b", "draft an email", text, flags=re.IGNORECASE)
+
+        # Extract Account if not already extracted
+        if not account:
+            acc_m = re.search(r"\b(?:from|using)\s+account\s+[\"']?([^\"'\s,;]+(?:\s+[^\"'\s,;]+)*?)[\"']?(?=\s+(?:to|with|saying|subject|attach|cc|bcc|regarding|about)|$)", text, re.IGNORECASE)
+            if acc_m:
+                account = acc_m.group(1).strip()
+                text = text[:acc_m.start()] + " " + text[acc_m.end():]
+            else:
+                acc_m2 = re.search(r"\b(?:from|using)\s+(?:my\s+)?([a-zA-Z0-9_\-@. ]+?)\s+account(?=\s+(?:to|with|saying|subject|attach|cc|bcc|regarding|about)|$)", text, re.IGNORECASE)
+                if acc_m2:
+                    account = acc_m2.group(1).strip()
+                    text = text[:acc_m2.start()] + " " + text[acc_m2.end():]
 
         # Extract CC
         cc = []
@@ -397,6 +416,8 @@ class ProfessionalEmailEngine:
         text = re.sub(r"\s+", " ", text).strip()
 
         def _wrap(raw_rec: str, subj: str, content: str) -> dict[str, Any]:
+            raw_rec = re.sub(r"\b(?:in|using|via|on)\s+(?:gmail|apple\s+mail)\b", "", raw_rec, flags=re.IGNORECASE).strip()
+            raw_rec = re.sub(r"^to\s+", "", raw_rec, flags=re.IGNORECASE).strip()
             content = re.sub(
                 r"(?:[.,;—–-]\s*)?"
                 r"(?:do\s+not\s+send\s*(?:it|this|anything)?|"
@@ -404,6 +425,12 @@ class ProfessionalEmailEngine:
                 r"don'?t\s+send\s*(?:it|this|anything)?|"
                 r"never\s+send\s*(?:it|this|anything)?|"
                 r"without\s+sending(?:\s+it|\s+anything)?|"
+                r"keep\s+it\s+as\s+a\s+draft|"
+                r"keep\s+as\s+a\s+draft|"
+                r"keep\s+it\s+as\s+draft|"
+                r"keep\s+as\s+draft|"
+                r"save\s+as\s+draft|"
+                r"save\s+as\s+a\s+draft|"
                 r"draft\s+only|"
                 r"just\s+draft(?:\s+it)?|"
                 r"only\s+draft|"
@@ -424,10 +451,21 @@ class ProfessionalEmailEngine:
                 "attachments": attachments,
                 "raw_command": message.strip(),
             }
+            return {
+                "recipient": raw_rec,
+                "subject": subj,
+                "content": content,
+                "account": account,
+                "sender_account": account,
+                "cc": cc,
+                "bcc": bcc,
+                "attachments": attachments,
+                "raw_command": message.strip(),
+            }
 
         # Pattern 0C: send/draft email (NO recipient in prompt) saying/asking/requesting <content>
         p0c = re.search(
-            r"^(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|summarizing|summarising|sharing|about|:)\s+(.+)",
+            r"^(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|summarizing|summarising|sharing|about|:)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -440,7 +478,7 @@ class ProfessionalEmailEngine:
 
         # Pattern 0A: send/draft email to <recipient> [with subject <subj>] requesting/asking for <content>
         p0a = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(?:with\s+)?(?:subject|titled|about)\s+(.+?)\s+(?:requesting|asking for|seeking|to collect|demanding|to request)\s+(.+)",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft)\s+to\s+(.+?)\s+(?:with\s+)?(?:subject|titled|about)\s+(.+?)\s+(?:requesting|asking for|seeking|to collect|demanding|to request)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -452,7 +490,7 @@ class ProfessionalEmailEngine:
 
         # Pattern 0B: send/draft email to <recipient> requesting/asking for/seeking/to collect <content>
         p0b = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(?:requesting|asking for|seeking|to collect|demanding|to request)\s+(.+)",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft)\s+to\s+(.+?)\s+(?:requesting|asking for|seeking|to collect|demanding|to request)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -464,7 +502,7 @@ class ProfessionalEmailEngine:
         # Check for explicit recipient and saying/body
         # Pattern 1: send/draft email to <recipient> [with subject <subj>] [and] saying/body/that says <content>
         p1 = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(?:with\s+)?(?:subject|titled|about)\s+(.+?)\s+(?:and\s+)?(?:saying|body|with|that says|:)\s+(.+)",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft)\s+to\s+(.+?)\s+(?:with\s+)?(?:subject|titled|about)\s+(.+?)\s+(?:and\s+)?(?:saying|body|with|that says|:)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -476,7 +514,7 @@ class ProfessionalEmailEngine:
 
         # Pattern 1B: send/draft email to <recipient> [with] subject <subj> (no body)
         p1b = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(?:with\s+)?(?:subject|titled)\s+[\"']?([^\"'\n]+?)[\"']?$",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft)\s+to\s+(.+?)\s+(?:with\s+)?(?:subject|titled)\s+[\"']?([^\"'\n]+?)[\"']?$",
             text,
             re.IGNORECASE,
         )
@@ -487,7 +525,7 @@ class ProfessionalEmailEngine:
 
         # Pattern 2: send/draft email to <recipient> saying/body/that says/asking/requesting/about/summarizing <content>
         p2 = re.search(
-            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail)\s+to\s+(.+?)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|summarizing|summarising|sharing|giving|providing|outlining|detailing|about|:)\s+(.+)",
+            r"(?:send|draft|create|write|prepare)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft)\s+to\s+(.+?)\s+(saying|body|that says|with|requesting|asking\s+(?:for|whether|if|about)?|asking|inquiring\s+(?:about|whether)?|inquiring|telling|regarding|concerning|to\s+collect|explaining|stating|informing|notifying|mentioning|summarizing|summarising|sharing|giving|providing|outlining|detailing|about|:)\s+(.+)",
             text,
             re.IGNORECASE,
         )
@@ -1260,6 +1298,10 @@ class ProfessionalEmailEngine:
         """Applies follow-up user instructions (e.g. 'make it shorter', 'change subject') cleanly."""
         inst = edit_instruction.lower().strip()
 
+        # ── Inspection requests ──
+        if any(w in inst for w in ("show me the revised draft", "show me the draft", "view draft", "show draft", "see draft", "display draft", "what is the draft")):
+            return draft
+
         # ── Multilingual Translation & Rewriting (ML-04, ML-06, ML-07, ML-08) ──
         target_lang, directive, _ = extract_explicit_language_directive(edit_instruction)
         if target_lang:
@@ -1304,6 +1346,32 @@ class ProfessionalEmailEngine:
                 draft.subject = translate_text(draft.subject, target_lang=target_lang)
                 draft.language = target_lang
                 draft.audit_notes.append(f"QC: Translated draft to {target_lang}.")
+            draft.approval_hash = draft.compute_hash()
+            return draft
+
+        # ── Meeting time updates (e.g. 'Change the meeting time to 3 PM') ─────────
+        time_change_m = re.search(
+            r"(?:change\s+(?:the\s+)?(?:meeting\s+)?time\s+to|set\s+(?:the\s+)?(?:meeting\s+)?time\s+to|meeting\s+time\s+to|time\s+to)\s+([A-Za-z0-9\s:apmAPM.-]+?)(?:\.|$)",
+            edit_instruction,
+            re.IGNORECASE,
+        )
+        if time_change_m:
+            new_time = time_change_m.group(1).strip()
+            time_pattern = re.compile(r"\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)|\d{1,2}\s*(?:o'clock))\b")
+            if time_pattern.search(draft.body):
+                draft.body = time_pattern.sub(new_time, draft.body)
+            else:
+                lines = [l for l in draft.body.split("\n\n") if l.strip()]
+                if len(lines) >= 2:
+                    closing = lines[-1]
+                    content_paras = lines[:-1]
+                    content_paras.append(f"Please note: the meeting time has been updated to {new_time}.")
+                    draft.body = "\n\n".join(content_paras + [closing])
+                else:
+                    draft.body += f"\n\nPlease note: the meeting time has been updated to {new_time}."
+            if time_pattern.search(draft.subject):
+                draft.subject = time_pattern.sub(new_time, draft.subject)
+            draft.audit_notes.append(f"QC: Updated meeting time to '{new_time}'.")
             draft.approval_hash = draft.compute_hash()
             return draft
 
@@ -1450,6 +1518,27 @@ class ProfessionalEmailEngine:
             draft.approval_hash = draft.compute_hash()
             return draft
 
+        # Paragraph addition (e.g. 'Add this paragraph: ...')
+        add_para_m = re.search(
+            r"^(?:add\s+(?:this\s+)?paragraph(?:\s*:)?\s*|insert\s+(?:this\s+)?paragraph(?:\s*:)?\s*)(.+)",
+            edit_instruction,
+            re.IGNORECASE,
+        )
+        if add_para_m:
+            para_content = add_para_m.group(1).strip()
+            if para_content:
+                lines = [l for l in draft.body.split("\n\n") if l.strip()]
+                if len(lines) >= 2:
+                    closing = lines[-1]
+                    content_paras = lines[:-1]
+                    content_paras.append(para_content)
+                    draft.body = "\n\n".join(content_paras + [closing])
+                else:
+                    draft.body += f"\n\n{para_content}"
+                draft.audit_notes.append(f"QC: Added paragraph '{para_content[:40]}...'.")
+                draft.approval_hash = draft.compute_hash()
+                return draft
+
         # Add timeline / deadline / detail
         if "before friday" in inst or "need the documents before" in inst or inst.startswith("add that ") or "add " in inst or "include that " in inst:
             addition = edit_instruction
@@ -1487,9 +1576,9 @@ class ProfessionalEmailEngine:
                 draft.approval_hash = draft.compute_hash()
                 return draft
 
-        # Make it shorter AND formal
+        # Make it shorter AND formal / professional
         is_shorten = any(w in inst for w in ("shorter", "concise", "brief", "shorten", "condense", "summarize"))
-        is_formal = "formal" in inst
+        is_formal = any(w in inst for w in ("formal", "professional", "business"))
         if is_shorten and is_formal:
             name = draft.recipient.split("@")[0].capitalize()
             if "•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE)):
@@ -1553,7 +1642,7 @@ class ProfessionalEmailEngine:
                 draft.approval_hash = draft.compute_hash()
                 return draft
 
-        # Make it formal
+        # Make it formal / professional
         if is_formal:
             name = draft.recipient.split("@")[0].capitalize()
             if "•" in draft.body and bool(re.search(r"\b(?:ai|artificial intelligence|breakthroughs)\b", draft.body, re.IGNORECASE)):
@@ -1566,14 +1655,14 @@ class ProfessionalEmailEngine:
                     f"Sincerely"
                 )
                 draft.body = formal_body
-                draft.tone = "formal"
-                draft.audit_notes.append("QC: Updated tone to formal.")
+                draft.tone = "professional" if "professional" in inst else "formal"
+                draft.audit_notes.append(f"QC: Updated tone to {draft.tone}.")
                 draft.approval_hash = draft.compute_hash()
                 return draft
             else:
                 draft.body = re.sub(r"^(?:Hi|Hey|Hello)[,\s]*", "Dear ", draft.body).replace("Thanks,", "Sincerely,").replace("Best regards,", "Sincerely,").replace("Catch up soon!", "Sincerely,").replace("Best regards", "Sincerely")
-                draft.tone = "formal"
-                draft.audit_notes.append("QC: Updated tone to formal.")
+                draft.tone = "professional" if "professional" in inst else "formal"
+                draft.audit_notes.append(f"QC: Updated tone to {draft.tone}.")
                 draft.approval_hash = draft.compute_hash()
                 return draft
 

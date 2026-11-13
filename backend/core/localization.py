@@ -321,13 +321,13 @@ def get_cortex_capabilities(lang_code: str = "en") -> str:
         )
     return (
         "### Cortex System Capabilities & Status\n\n"
-        "**Available & Verified on this Mac:**\n"
+        "**Available & Verified on this Mac (SUPPORTED_AND_READY):**\n"
         "1. **Conversational Intelligence**: Fluent multilingual reasoning (English, Kannada, Hindi, Kanglish, Hinglish) with persistent session context.\n"
         "2. **Safari Web Research**: Live browser activation, web search, real-time article inspection, and structured synthesis with cited URLs.\n"
         "3. **Apple Mail Automation**: Contextual draft creation, iterative revisions across turns, and a strict supervised approval gate.\n"
         "4. **Finder Inspection**: Safe, read-only navigation of user directories (such as Downloads) and visible filename listing without file alterations.\n"
         "5. **Apple Notes Management**: Creating new notes, updating titles, appending bullet points, and foregrounding Notes.\n\n"
-        "**Implemented with System Permission / Setup Requirements:**\n"
+        "**Implemented with System Permission / Setup Requirements (PARTIALLY_IMPLEMENTED):**\n"
         "• **macOS Screen Observation**: Multi-source desktop perception (macOS Accessibility API & ScreenCaptureKit); requires Accessibility and Screen Recording permissions in System Settings.\n"
         "• **WhatsApp Desktop Integration**: Recipient resolution and draft staging in visible composer; requires WhatsApp Desktop installed.\n\n"
         "🔒 **Safety Boundaries & Unsupported Operations:**\n"

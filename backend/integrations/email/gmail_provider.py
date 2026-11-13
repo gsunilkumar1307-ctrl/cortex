@@ -153,7 +153,7 @@ class GmailProvider(BaseEmailProvider):
     def search_contacts(self, query: str) -> list[dict[str, Any]]:
         contacts = [
             {"name": "Dr. Shanmukha Nagaraj", "email": "hod.cse@rvce.edu.in", "role": "hod", "department": "Computer Science and Engineering (CSE)", "institution": "RV College of Engineering"},
-            {"name": "Prof. Smith", "email": "prof.smith@university.edu", "role": "professor", "department": "Computer Science", "institution": "State University"},
+            {"name": "Prof. Smith", "email": "prof.smith@university.edu", "role": "project guide / professor", "department": "Computer Science", "institution": "State University"},
             {"name": "Sarah Miller", "email": "sarah.manager@techcorp.io", "role": "manager", "department": "Engineering", "institution": "TechCorp"},
             {"name": "Jessica Vance", "email": "recruiter@innovate.ai", "role": "recruiter", "department": "Talent", "institution": "Innovate AI"},
             {"name": "David Clark", "email": "david@clientpartners.com", "role": "client", "department": "Procurement", "institution": "Client Partners"},
@@ -235,6 +235,85 @@ class GmailProvider(BaseEmailProvider):
             return {"ok": False, "provider": "gmail", "status": "error", "error": f"HTTP {e.code}: {err_body}", "message": f"Gmail API error (HTTP {e.code}): {err_body}", "draft_id": None}
         except Exception as e:
             return {"ok": False, "provider": "gmail", "status": "error", "error": str(e), "message": f"Failed to create Gmail draft: {e}", "draft_id": None}
+
+    def update_draft(
+        self,
+        draft_id: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        old_subject: str = "",
+    ) -> dict[str, Any]:
+        if not recipient:
+            return {"ok": False, "provider": "gmail", "status": "error", "message": "Recipient address is required.", "draft_id": None}
+
+        if self.sandbox:
+            target_entry = None
+            for d in self._sandbox_drafts:
+                if (draft_id and d.get("id") == draft_id) or (
+                    d.get("recipient", "").lower() == recipient.lower() and (not old_subject or d.get("subject") in (old_subject, subject))
+                ):
+                    target_entry = d
+                    break
+
+            if target_entry:
+                target_entry["recipient"] = recipient
+                target_entry["subject"] = subject
+                target_entry["body"] = body
+                target_entry["account"] = account
+                target_entry["attachments"] = attachments or []
+                target_entry["cc"] = cc or []
+                target_entry["bcc"] = bcc or []
+                return {
+                    "ok": True,
+                    "provider": "gmail",
+                    "status": "draft_updated",
+                    "message": f"Draft updated in Gmail for {recipient} with subject '{subject}'.",
+                    "draft_id": target_entry.get("id", draft_id),
+                    "data": target_entry,
+                }
+            return self.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
+
+        if not self.is_authenticated():
+            return {
+                "ok": False,
+                "provider": "gmail",
+                "status": "unauthenticated",
+                "error": "OAuth authorization required",
+                "message": "Gmail authentication required. Please connect your Google account with mail.compose permission.",
+                "draft_id": None,
+            }
+
+        try:
+            raw_encoded = self._build_rfc2822_message(recipient, subject, body, account, attachments)
+            payload = json.dumps({"id": draft_id, "message": {"raw": raw_encoded}}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.API_BASE}/drafts/{draft_id}",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json",
+                },
+                method="PUT",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                new_id = data.get("id", draft_id)
+                return {
+                    "ok": True,
+                    "provider": "gmail",
+                    "status": "draft_updated",
+                    "message": f"Draft updated in Gmail for {recipient} with subject '{subject}'.",
+                    "draft_id": new_id,
+                    "data": data,
+                }
+        except Exception:
+            self.delete_draft(recipient, old_subject or subject)
+            return self.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
 
     def send_message(
         self,

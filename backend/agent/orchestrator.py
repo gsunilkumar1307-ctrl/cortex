@@ -287,8 +287,12 @@ class CortexOrchestrator:
         memory: EncryptedMemoryStore | None = None,
         use_gemini: bool | None = None,
         task_store: TaskStore | None = None,
+        dry_run: bool = False,
     ) -> None:
-        self.automation = automation or DeviceAutomation()
+        self.dry_run = dry_run
+        self.automation = automation or DeviceAutomation(dry_run=dry_run)
+        if dry_run and hasattr(self.automation, "dry_run"):
+            self.automation.dry_run = True
         self.memory = memory or EncryptedMemoryStore(str(Path("work") / "cortex-memory.sqlite3"))
         self.task_store = task_store or TaskStore(str(self.memory.db_path))
         setattr(self.automation, "task_store", self.task_store)
@@ -318,6 +322,7 @@ class CortexOrchestrator:
         )
         self.gemini_model = None
         self.gemini_cooldown_until: float = 0.0
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
         self._lock = threading.RLock()
 
         if use_gemini is False:
@@ -350,6 +355,7 @@ class CortexOrchestrator:
                                 break
                     except Exception:
                         pass
+            self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
             self.use_gemini = HAS_GENAI and bool(self.api_key)
             if self.use_gemini:
                 genai.configure(api_key=self.api_key)
@@ -436,7 +442,12 @@ class CortexOrchestrator:
         try:
             row = self.memory.get("conversation_history")
             if row:
-                self.history = row.get("messages", [])
+                raw_msgs = row.get("messages", [])
+                validated = []
+                for m in raw_msgs:
+                    if isinstance(m, dict) and m.get("role") in ("user", "model") and isinstance(m.get("parts"), list):
+                        validated.append(m)
+                self.history = validated[-20:]
         except Exception as e:
             print(f"[cortex] Failed to load conversation history: {e}", file=sys.stderr)
 
@@ -519,12 +530,41 @@ class CortexOrchestrator:
             if command == TaskCommand.ASK_QUESTION and data.get("answer"):
                 params["answer"] = data["answer"]
 
+            if command in (TaskCommand.DRAFT_MAIL, TaskCommand.SEND_MAIL):
+                fallback_params = self._extract_params(command, message)
+                for k, v in fallback_params.items():
+                    if not params.get(k) and v:
+                        params[k] = v
+
+            llm_risk = risk_map.get(data.get("risk_level", "low"), RiskLevel.LOW)
+            llm_approval = bool(data.get("requires_approval", False))
+            llm_block_reason = data.get("block_reason")
+
+            # Deterministic safety policy validation (PolicyEngine / classify_command is authoritative)
+            policy_risk, policy_approval, policy_block_reason = classify_command(command, message)
+            if command in (TaskCommand.CLICK_ELEMENT, TaskCommand.DESKTOP_WORKFLOW):
+                final_risk = policy_risk
+                final_approval = policy_approval
+                final_block_reason = policy_block_reason if policy_risk == RiskLevel.BLOCKED else None
+            elif policy_risk == RiskLevel.BLOCKED:
+                final_risk = RiskLevel.BLOCKED
+                final_approval = False
+                final_block_reason = policy_block_reason or llm_block_reason
+            elif policy_approval or policy_risk == RiskLevel.HIGH:
+                final_risk = RiskLevel.HIGH
+                final_approval = True
+                final_block_reason = policy_block_reason
+            else:
+                final_risk = llm_risk
+                final_approval = llm_approval
+                final_block_reason = llm_block_reason
+
             return {
                 "command": command,
                 "params": params,
-                "risk_level": risk_map.get(data.get("risk_level", "low"), RiskLevel.LOW),
-                "requires_approval": bool(data.get("requires_approval", False)),
-                "block_reason": data.get("block_reason"),
+                "risk_level": final_risk,
+                "requires_approval": final_approval,
+                "block_reason": final_block_reason,
                 "answer": data.get("answer")
             }
         except Exception as exc:
@@ -592,17 +632,13 @@ class CortexOrchestrator:
         text = message.strip()
         msg_lower = text.lower()
 
-        # Priority guard: If we are actively waiting for an email body or draft edits,
-        # user input must NOT be treated as unrelated unless it is an explicit desktop/system command.
-        if step in ("waiting_for_body", "waiting_for_edit"):
-            cmd = command_from_intent(text)
-            if cmd not in (TaskCommand.UNKNOWN, TaskCommand.ASK_QUESTION, TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
-                return True
-            return False
-
         # If it contains an email address, it is definitely email-related
         if re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text):
             return False
+
+        # Self-capability questions are always unrelated to pending drafts
+        if is_self_capability_query(text):
+            return True
 
         # Greetings in English and transliterated Indic
         greetings = (
@@ -627,6 +663,26 @@ class CortexOrchestrator:
         )
         if any(p in text for p in indic_conversational):
             return True
+
+        # General questions starting with question words or ending with '?'
+        question_starters = (
+            "what is", "what's", "what are", "who is", "who's", "who are",
+            "how does", "how do", "how is", "how to", "why is", "why do", "why does",
+            "where is", "when is", "tell me", "explain", "can you explain",
+            "search for", "find out", "summarize our", "recap our"
+        )
+        if any(msg_lower.startswith(qs) for qs in question_starters) or (
+            msg_lower.endswith("?") and not any(k in msg_lower for k in ("subject", "body", "email", "mail", "draft", "recipient", "address"))
+        ):
+            return True
+
+        # Priority guard: If we are actively waiting for an email body or draft edits,
+        # other non-question text without explicit commands is accepted as the intended body text.
+        if step in ("waiting_for_body", "waiting_for_edit"):
+            cmd = command_from_intent(text)
+            if cmd not in (TaskCommand.UNKNOWN, TaskCommand.ASK_QUESTION, TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
+                return True
+            return False
 
         # Romanized Indic query patterns (e.g. "hindi me batao...", "kannada dalli heli...")
         if re.search(r"\b(hindi|kannada|tamil|telugu)\s+(?:me|dalli|la|lo|bhasha|mein)\b", msg_lower):
@@ -854,7 +910,7 @@ class CortexOrchestrator:
                 pass
 
             elif pending.get("type") == "email_draft" and step == "confirm_send":
-                is_show_draft = any(kw in msg_lower for kw in ("show me", "show draft", "view draft", "complete draft", "see draft", "display draft", "read draft"))
+                is_show_draft = any(kw in msg_lower for kw in ("show me", "show draft", "view draft", "complete draft", "see draft", "display draft", "read draft", "show me the revised draft", "show revised draft"))
                 has_negation = (
                     self._is_explicit_cancellation(message, in_pending=True)
                     or bool(re.search(r"\b(?:cancel|abort|discard|stop|reject)\b", msg_lower))
@@ -865,11 +921,25 @@ class CortexOrchestrator:
                 if has_negation:
                     return self._handle_cancellation(message, raw_lang_code, detected_lang)
 
+                is_vague_approval = bool(
+                    re.search(r"\b(?:looks\s+good|sounds\s+good|seems\s+fine|looks\s+great|looks\s+fine|seems\s+good|all\s+good|nice|perfect|cool)\b", msg_lower)
+                )
+                if is_vague_approval:
+                    task_id = pending["task_id"]
+                    task = self.tasks[task_id]
+                    clarif_msg = (
+                        "I'm glad the draft looks good! However, Cortex requires explicit authorization before sending any message. "
+                        "Please say 'Send it' or click Approve to confirm sending."
+                    )
+                    return {"task": task.to_dict(), "message": clarif_msg}
+
                 edit_patterns = (
                     r"\b(?:shorter|concise|formal|casual|brief|subject|reason)\b",
+                    r"\b(?:professional|tone|more\s+professional)\b",
                     r"\b(?:before|friday|monday|tuesday|wednesday|thursday|saturday|sunday)\b",
                     r"\b(?:deadline|urgent|professor|prof|dear|address|account)\b",
-                    r"\b(?:college\s+email|work\s+email|add|remove|change|include|mention)\b",
+                    r"\b(?:meeting\s+time|time\s+to|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b)\b",
+                    r"\b(?:college\s+email|work\s+email|add|remove|change|include|mention|paragraph)\b",
                     r"\b(?:make\s+it|update|rewrite|replace|warm\s+regards|sincerely|regards)\b",
                     r"\b(?:kannada|hindi|tamil|telugu|english|translate|write\s+it\s+in|write\s+in)\b",
                     r"\b(?:keep\s+the|ಕನ್ನಡ|ಕನ್ನಡದಲ್ಲಿ|हिंदी|हिंदी\s+में|தமிழ்|தமிழில்|తెలుగు|తెలుగులో)\b",
@@ -883,6 +953,7 @@ class CortexOrchestrator:
                     not is_edit
                     and not is_show_draft
                     and not has_negation
+                    and not is_vague_approval
                     and (
                         bool(re.search(r"\b(yes|send\s+it|approve|go\s+ahead|send|sure|ok|okay|please\s+send|y|yep|agree|confirmed)\b", msg_lower))
                         or any(kw in msg_lower for kw in ("ಕಳುಹಿಸು", "ಕಳಿಸು", "ಸರಿ", "ಹೌದು", "ಆಯ್ತು", "भेजो", "भेजें", "हाँ", "हां", "ठीक है", "அனுப்பு", "சரி", "పంపు", "సరే"))
@@ -961,27 +1032,29 @@ class CortexOrchestrator:
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.add_event("draft_edited", f"Draft updated: {message}")
 
-                    if old_subject and old_subject != updated_draft.subject:
-                        try:
-                            self.automation.mail.delete_draft(old_recipient, old_subject)
-                        except Exception:
-                            pass
-
+                    old_draft_id = pending.get("draft_id", "")
                     draft_saved = True
                     save_error = ""
                     try:
-                        res = self.automation.execute(TaskCommand.DRAFT_MAIL, {
-                            "recipient": updated_draft.recipient,
-                            "subject": updated_draft.subject,
-                            "body": updated_draft.body,
-                            "account": updated_draft.sender_account,
-                            "attachments": updated_draft.attachments,
-                            "cc": updated_draft.cc,
-                            "bcc": updated_draft.bcc,
-                        })
-                        if hasattr(res, "ok") and not res.ok:
+                        update_res = self.automation.update_email_draft(
+                            draft_id=old_draft_id,
+                            recipient=updated_draft.recipient,
+                            subject=updated_draft.subject,
+                            body=updated_draft.body,
+                            account=updated_draft.sender_account,
+                            attachments=updated_draft.attachments,
+                            cc=updated_draft.cc,
+                            bcc=updated_draft.bcc,
+                            old_subject=old_subject,
+                        )
+                        if hasattr(update_res, "ok") and not update_res.ok:
                             draft_saved = False
-                            save_error = res.message
+                            save_error = update_res.message
+                        elif hasattr(update_res, "data") and isinstance(update_res.data, dict):
+                            new_draft_id = update_res.data.get("draft_id")
+                            if new_draft_id:
+                                pending["draft_id"] = new_draft_id
+                                task.params["draft_id"] = new_draft_id
                     except Exception as e:
                         draft_saved = False
                         save_error = str(e)
@@ -2338,6 +2411,15 @@ class CortexOrchestrator:
                     draft_saved = False
                     save_error = str(e)
 
+                draft_id = ""
+                if hasattr(res, "data") and isinstance(res.data, dict):
+                    draft_id = res.data.get("draft_id", "")
+                elif isinstance(res, dict):
+                    draft_id = res.get("draft_id") or res.get("data", {}).get("draft_id", "")
+                if draft_id:
+                    draft.draft_id = draft_id
+                    task.params["draft_id"] = draft_id
+
                 task.params["recipient"] = raw_rec if raw_rec else draft.recipient
                 task.params["recipient_email"] = draft.recipient
                 task.params["subject"] = draft.subject
@@ -2366,6 +2448,7 @@ class CortexOrchestrator:
                         "type": "email_draft",
                         "step": "confirm_send",
                         "task_id": task.id,
+                        "draft_id": draft_id,
                         "recipient": raw_rec if raw_rec else draft.recipient,
                         "recipient_email": draft.recipient,
                         "subject": draft.subject,
@@ -2384,6 +2467,7 @@ class CortexOrchestrator:
                         "type": "email_draft",
                         "step": "confirm_send",
                         "task_id": task.id,
+                        "draft_id": draft_id,
                         "recipient": raw_rec if raw_rec else draft.recipient,
                         "recipient_email": draft.recipient,
                         "subject": draft.subject,
@@ -2466,11 +2550,17 @@ class CortexOrchestrator:
             TaskCommand.TYPE_IN_ELEMENT,
             TaskCommand.DESKTOP_WORKFLOW,
         ) and task.status != TaskStatus.FAILED:
-            self.history.append({"role": "user", "parts": [message]})
-            self.history.append({"role": "model", "parts": [response]})
-            if len(self.history) > 20:
-                self.history = self.history[-20:]
-            self._save_history()
+            if not (
+                self.history
+                and len(self.history) >= 2
+                and self.history[-2] == {"role": "user", "parts": [message]}
+                and self.history[-1] == {"role": "model", "parts": [response]}
+            ):
+                self.history.append({"role": "user", "parts": [message]})
+                self.history.append({"role": "model", "parts": [response]})
+                if len(self.history) > 20:
+                    self.history = self.history[-20:]
+                self._save_history()
 
         self.tasks[task.id] = task
         self._persist_task(task)
@@ -2571,13 +2661,29 @@ class CortexOrchestrator:
                 if self.pending_action and (self.pending_action.get("task_id") == task_id or (self.pending_action.get("task") and getattr(self.pending_action["task"], "id", None) == task_id)):
                     self.pending_action = None
                 if task.command in (TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL):
+                    # Draft-only enforcement: direct send is completely blocked
+                    if task.params.get("draft_only"):
+                        task.status = TaskStatus.FAILED
+                        task.error = "Cannot send: task was designated as draft-only ('Draft only — not sent'). To send, please initiate an explicit send request."
+                        task.add_event("approval_rejected", task.error)
+                        self._persist_task(task)
+                        return task.to_dict()
+
+                    # Replay protection: cannot consume the same approval twice
+                    if task.params.get("approval_consumed"):
+                        task.status = TaskStatus.FAILED
+                        task.error = "Approval replay detected: this cryptographic approval was already consumed."
+                        task.add_event("approval_replay_rejected", task.error)
+                        self._persist_task(task)
+                        return task.to_dict()
+
                     expected_hash = task.params.get("approval_hash")
                     if expected_hash:
                         current_hash = EmailDraft(
                             recipient=task.params.get("recipient_email") or task.params.get("recipient", ""),
                             subject=task.params.get("subject", ""),
                             body=task.params.get("formatted_body") or task.params.get("body", ""),
-                            sender_account=task.params.get("sender_account", ""),
+                            sender_account=task.params.get("sender_account") or task.params.get("account") or "Primary Account",
                             attachments=task.params.get("attachments", []),
                             cc=task.params.get("cc", []),
                             bcc=task.params.get("bcc", []),
@@ -3279,6 +3385,86 @@ class CortexOrchestrator:
         q_lower = query.lower().strip()
         is_macos = (getattr(self.automation, "system", "") == "darwin") or (sys.platform == "darwin")
 
+        # 0. Session verified capabilities inquiry based on empirical execution evidence
+        is_session_verification_query = any(p in q_lower for p in (
+            "verified in this session", "actually verified", "without opening anything",
+            "execution evidence", "have you verified", "which capabilities have you verified",
+            "what capabilities have you verified"
+        ))
+        if is_session_verification_query:
+            verified_capabilities = []
+            if self._is_gemini_available():
+                verified_capabilities.append("Conversational Intelligence & Reasoning (Google Gemini `gemini-3.5-flash` active & empirically verified)")
+            elif self.use_gemini:
+                verified_capabilities.append("Conversational Intelligence (Active, local fallback)")
+            else:
+                verified_capabilities.append("Conversational Intelligence (Deterministic local engine)")
+
+            # Check executed tasks in this session
+            executed_types = set()
+            for t_item in self.tasks.values():
+                if getattr(t_item, "status", None) == TaskStatus.COMPLETED:
+                    cmd_val = getattr(t_item, "command", None)
+                    if cmd_val == TaskCommand.WEB_SEARCH:
+                        executed_types.add("Safari Web Research & Inspection")
+                    elif cmd_val in (TaskCommand.OBSERVE_SCREEN, TaskCommand.SCREEN_VISION):
+                        executed_types.add("macOS Screen Observation")
+                    elif cmd_val in (TaskCommand.DRAFT_MAIL, TaskCommand.SEND_MAIL):
+                        executed_types.add("Apple Mail Drafting")
+                    elif cmd_val in (TaskCommand.SEARCH_FILES, TaskCommand.READ_FILE):
+                        executed_types.add("Finder Inspection")
+                    elif cmd_val == TaskCommand.WRITE_NOTE:
+                        executed_types.add("Apple Notes Management")
+                    elif cmd_val == TaskCommand.SEND_MESSAGE:
+                        executed_types.add("WhatsApp Desktop Integration")
+
+            for et in sorted(executed_types):
+                verified_capabilities.append(f"{et} (executed and verified in this session)")
+
+            all_registered = [
+                ("Safari Web Research & Inspection", "Safari Web Research & Inspection"),
+                ("macOS Screen Observation", "macOS Screen Observation (Accessibility / ScreenCaptureKit)"),
+                ("Apple Mail Drafting", "Apple Mail Draft Composition & Revision"),
+                ("Finder Inspection", "Finder Directory & File Inspection"),
+                ("Apple Notes Management", "Apple Notes Management"),
+                ("WhatsApp Desktop Integration", "WhatsApp Desktop Staging"),
+            ]
+            unexecuted = [desc for name, desc in all_registered if not any(name in v for v in verified_capabilities)]
+
+            if lang_code == "kn":
+                ver_kn = "\n".join(f"• **{v}**" for v in verified_capabilities)
+                unex_kn = "\n".join(f"• {u} (ನೋಂದಾಯಿಸಲಾಗಿದೆ, ಈ ಸೆಷನ್‌ನಲ್ಲಿ ಚಲಾಯಿಸಲಾಗಿಲ್ಲ)" for u in unexecuted)
+                return (
+                    "ಈ ಸೆಷನ್‌ನ ನೈಜ ಕಾರ್ಯಾಚರಣೆಯ ಪುರಾವೆಗಳ ಆಧಾರದ ಮೇಲೆ (ಯಾವುದೇ ಅಪ್ಲಿಕೇಶನ್ ತೆರೆಯದೆ):\n\n"
+                    "### ಈ ಸೆಷನ್‌ನಲ್ಲಿ ಪ್ರಾಯೋಗಿಕವಾಗಿ ಪರಿಶೀಲಿಸಿದ ಸಾಮರ್ಥ್ಯಗಳು:\n"
+                    f"{ver_kn}\n\n"
+                    "### ನೋಂದಾಯಿತ ಆದರೆ ಈ ಸೆಷನ್‌ನಲ್ಲಿ ಚಲಾಯಿಸದ ಸಾಮರ್ಥ್ಯಗಳು:\n"
+                    f"{unex_kn}\n\n"
+                    "*ಸೂಚನೆ: ಈ ಸ್ಥಿತಿಯನ್ನು ಪರಿಶೀಲಿಸಲು ಯಾವುದೇ ಬಾಹ್ಯ ಅಪ್ಲಿಕೇಶನ್‌ಗಳನ್ನು ತೆರೆಯಲಾಗಿಲ್ಲ.*"
+                )
+            elif lang_code == "hi":
+                ver_hi = "\n".join(f"• **{v}**" for v in verified_capabilities)
+                unex_hi = "\n".join(f"• {u} (पंजीकृत, इस सत्र में निष्पादित नहीं)" for u in unexecuted)
+                return (
+                    "इस सत्र के वास्तविक निष्पादन साक्ष्यों के आधार पर (बिना कोई ऐप खोले):\n\n"
+                    "### इस सत्र में प्रायೋಗಿಕ रूप से सत्यापित क्षमताएं:\n"
+                    f"{ver_hi}\n\n"
+                    "### पंजीकृत लेकिन इस सत्र में अनिष्पादित क्षमताएं:\n"
+                    f"{unex_hi}\n\n"
+                    "*नोट: इस स्थिति को सत्यापित करने के लिए कोई बाहरी ऐप नहीं खोला गया।*"
+                )
+
+            ver_en = "\n".join(f"• **{v}**" for v in verified_capabilities)
+            unex_en = "\n".join(f"• {u} (registered, not executed in this session)" for u in unexecuted)
+            return (
+                "Based strictly on execution evidence in this session (without opening or launching external applications):\n\n"
+                "### Empirically Verified in this Session:\n"
+                f"{ver_en}\n\n"
+                "### Registered Capabilities (Unexecuted in this Session):\n"
+                f"{unex_en}\n\n"
+                "*Note: No external applications were opened to verify this state.*"
+            )
+
         # 1. Screen reading inquiry: "can you read my screen", "are you able to read my screen"
         if re.search(r"\b(?:read|see|observe|inspect)\s+(?:my|the)?\s*screen\b", q_lower):
             if lang_code == "kn":
@@ -3436,8 +3622,8 @@ class CortexOrchestrator:
             "4. **Finder File & Directory Inspection**: I can navigate Finder to your Downloads folder and list visible filenames in safe read-only mode without modifying the filesystem.\n"
             "5. **Apple Notes Management**: I can create structured notes in Apple Notes, append bulleted takeaways or action items, and foreground Notes.\n\n"
             "### System Status & Security Boundaries:\n"
-            "• **Available & Verified on this Mac**: Conversational AI, Safari Research, Apple Mail Drafting, Finder Downloads Inspection, Apple Notes Management.\n"
-            "• **Implemented with System Permission Requirements**: macOS Screen Observation (requires Accessibility and Screen Recording permissions in *System Settings > Privacy & Security*); WhatsApp Desktop (requires WhatsApp Desktop installed).\n"
+            "• **Available & Verified on this Mac (SUPPORTED_AND_READY)**: Conversational Intelligence, Safari Research, Apple Mail Automation, Finder Downloads Inspection, Apple Notes Management.\n"
+            "• **Implemented with System Permission Requirements (PARTIALLY_IMPLEMENTED)**: macOS Screen Observation (requires Accessibility and Screen Recording permissions in *System Settings > Privacy & Security*); WhatsApp Desktop (requires WhatsApp Desktop installed).\n"
             "• **Unsupported & Safety-Gated Operations**: Autonomous sending of emails or messages without explicit approval (enforced by the Supervised Safety Model); destructive file deletions; unverified shell execution."
         )
 
@@ -3739,18 +3925,30 @@ class CortexOrchestrator:
             except Exception as e:
                 self._handle_gemini_error(e, context="question answering")
 
-        # 4. Web search fallback for factual queries (only if not a conversational meta-directive)
+        # 4. Web search fallback ONLY for legitimate web research queries
+        is_research_query = bool(re.search(
+            r"\b(?:search|latest|recent|news|current|articles?|links?|browse|look\s+up|find\s+out|developments?)\b",
+            q_lower
+        ))
         is_meta_directive = bool(re.search(
             r"\b(?:cancel|stop|clear|shorter|longer|more|less|summary|draft|open|close|send|yes|no)\b",
             q_lower
         ))
-        if not is_meta_directive and not is_self_capability_query(query):
+        if is_research_query and not is_meta_directive and not is_self_capability_query(query):
             try:
                 results = search_web(query, max_results=3)
                 if results:
                     return self._summarize_search(query, results)
             except Exception as e:
                 print(f"[cortex] Knowledge lookup error: {e}", file=sys.stderr)
+
+        # 5. Clear model-unavailable response when Gemini is rate-limited / in cooldown
+        if not self._is_gemini_available():
+            if lang_code == "kn":
+                return "ಕ್ಷಮಿಸಿ, Google Gemini ಮಾದರಿಯು API ದರ ಮಿತಿ (Rate Limit / Cooldown) ಕಾರಣದಿಂದ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ಸ್ಥಳೀಯ ಡೆಸ್ಕ್‌ಟಾಪ್ ಆಟೊಮೇಷನ್ ಮತ್ತು ಸ್ಥಿತಿ ಪರಿಶೀಲನೆ ಸಕ್ರಿಯವಾಗಿದೆ. ದಯವಿಟ್ಟು ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಪುನಃ ಪ್ರಯತ್ನಿಸಿ."
+            elif lang_code == "hi":
+                return "क्षमा करें, Google Gemini मॉडल वर्तमान में API दर सीमा (Rate Limit / Cooldown) के कारण अस्थायी रूप से अनुपलब्ध है। स्थानीय डेस्कटॉप स्वचालन पूरी तरह से सक्रिय है। कृपया थोड़ी देर बाद पुनः प्रयास करें।"
+            return "Google Gemini reasoning model is currently cooling down due to API rate limits. Local macOS desktop automation and deterministic tools remain fully operational. Please retry your inquiry in a moment."
 
         return localize("no_confident_answer", lang_code, query=query)
 
@@ -4030,13 +4228,15 @@ class CortexOrchestrator:
             read_result = self.automation.execute(TaskCommand.DRAFT_MAIL, task.params)
             recip = task.params.get("recipient", "recipient")
             subj = task.params.get("subject", "No subject")
+            account = str(task.params.get("account") or task.params.get("sender_account", ""))
+            provider_name = "Gmail" if ("gmail" in account.lower() or "@gmail.com" in account.lower()) else "Apple Mail"
             if read_result.ok:
                 task.status = TaskStatus.COMPLETED
-                task.result = f"Draft created in Apple Mail for {recip} with subject '{subj}'."
+                task.result = f"Draft created in {provider_name} for {recip} with subject '{subj}'."
                 task.add_event("completed", task.result)
             else:
                 task.status = TaskStatus.FAILED
-                task.error = read_result.message or "Failed to create draft in Apple Mail."
+                task.error = read_result.message or f"Failed to create draft in {provider_name}."
                 task.add_event("failed", task.error)
             return
 
@@ -4192,11 +4392,11 @@ class CortexOrchestrator:
                     task.result = final_res.summary or localize("action_done", lang)
             else:
                 if task.command == TaskCommand.OPEN_APP:
-                    task.result = f"Opened {task.params.get('appName', 'application')}."
+                    task.result = final_res.summary or f"Opened {task.params.get('appName', 'application')}."
                 elif task.command == TaskCommand.CLOSE_APP:
-                    task.result = f"Closed {task.params.get('appName', 'application')}."
+                    task.result = final_res.summary or f"Closed {task.params.get('appName', 'application')}."
                 elif task.command == TaskCommand.FOCUS_APP:
-                    task.result = f"Focused {task.params.get('appName', 'application')}."
+                    task.result = final_res.summary or f"Focused {task.params.get('appName', 'application')}."
                 elif task.command == TaskCommand.SCREENSHOT:
                     task.result = "Screenshot captured successfully."
                 elif task.command == TaskCommand.CALCULATE:
@@ -4267,7 +4467,22 @@ class CortexOrchestrator:
         prefix_match = re.match(r"^(?:hey\s+cortex|cortex|ok\s+cortex|hello\s+cortex|hi\s+cortex|please|can\s+you|could\s+you)\s*[,:]?\s*(.+)$", text, flags=re.IGNORECASE)
         if prefix_match:
             text = prefix_match.group(1).strip()
-        if command in {TaskCommand.OPEN_APP, TaskCommand.CLOSE_APP, TaskCommand.FOCUS_APP}:
+        if command in {TaskCommand.OPEN_APP, TaskCommand.CLOSE_APP, TaskCommand.FOCUS_APP, TaskCommand.INSPECT_APP}:
+            if command == TaskCommand.INSPECT_APP:
+                m = re.search(r"\bis\s+([a-z0-9\s_-]+?)\s+running", text, re.IGNORECASE)
+                if not m:
+                    m = re.search(r"\bcheck\s+(?:whether|if)\s+([a-z0-9\s_-]+?)\s+(?:is\s+)?running", text, re.IGNORECASE)
+                if not m:
+                    m = re.search(r"\bcheck\s+whether\s+([a-z0-9\s_-]+?)\s+running", text, re.IGNORECASE)
+                if not m:
+                    m = re.search(r"(?:inspect|check)\s+(?:app\s+)?(.+)", text, re.IGNORECASE)
+                raw_target = m.group(1).strip() if m else text
+                raw_target = re.sub(r"[?!.]+$", "", raw_target).strip()
+                normalized = normalize_app_name(raw_target) if raw_target else raw_target
+                if self.automation and hasattr(self.automation, "resolve_app_name"):
+                    normalized = self.automation.resolve_app_name(normalized)
+                return {"appName": normalized or text}
+
             if "finder" in text.lower():
                 folder_m = re.search(r"(?:show|open|reveal|view)\s+(?:the\s+)?([a-z0-9_/~\s-]+?)\s+(?:in\s+finder|folder\s+in\s+finder)", text, re.IGNORECASE)
                 folder = folder_m.group(1).strip() if folder_m else ""
@@ -4275,7 +4490,10 @@ class CortexOrchestrator:
             match = re.search(r"(?:open|launch|start|close|quit|exit)\s+(.+)", text, re.IGNORECASE)
             if command == TaskCommand.FOCUS_APP:
                 match = re.search(r"(?:focus|switch to|bring up|activate)\s+(.+)", text, re.IGNORECASE)
+                if not match:
+                    match = re.search(r"\bbring\s+(.+?)\s+to\s+(?:the\s+)?(?:front|foreground)", text, re.IGNORECASE)
             app_raw = match.group(1).strip() if match else text
+            app_raw = re.sub(r"[?!.]+$", "", app_raw).strip()
             if re.search(r"\s+and\s+", app_raw, re.IGNORECASE):
                 app_raw = re.split(r"\s+and\s+", app_raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
             # Strip Indic action verbs and postpositions
@@ -4289,6 +4507,8 @@ class CortexOrchestrator:
                 flags=re.IGNORECASE,
             ).strip()
             normalized = normalize_app_name(app_raw) if app_raw else app_raw
+            if self.automation and hasattr(self.automation, "resolve_app_name"):
+                normalized = self.automation.resolve_app_name(normalized)
             return {"appName": normalized or text}
         # ── Screen Intelligence & Autonomous Desktop Operator ──
         if command == TaskCommand.OBSERVE_SCREEN:
@@ -4658,7 +4878,7 @@ class CortexOrchestrator:
 
             if not subj and body:
                 ctx = self.email_engine.infer_recipient_context(recipient, text)
-                subj = self.email_engine.generate_subject(text or body, ctx)
+                subj = self.email_engine.generate_subject(body or text, ctx)
 
             return {
                 "recipient": recipient,

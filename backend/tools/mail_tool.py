@@ -88,6 +88,33 @@ class MailTool(BaseTool):
                 duration_ms=duration_ms,
             )
 
+        elif action == "update_draft":
+            old_subj = inputs.get("old_subject", "")
+            draft_id = inputs.get("draft_id", "")
+            if hasattr(self.mail, "update_draft"):
+                res = self.mail.update_draft(
+                    draft_id=draft_id,
+                    recipient=recipient,
+                    subject=subject,
+                    body=body,
+                    account=account,
+                    attachments=attachments,
+                    cc=cc,
+                    bcc=bcc,
+                    old_subject=old_subj,
+                )
+            else:
+                res = _call_adapter(self.mail.draft_mail, account=account, attachments=attachments, cc=cc, bcc=bcc)
+            duration_ms = (time.time() - start_time) * 1000
+            return ExecutionResult(
+                step_id=inputs.get("step_id", "update-draft-step"),
+                ok=res.get("ok", False),
+                message=res.get("message", ""),
+                data=res.get("data", {}),
+                error=None if res.get("ok") else res.get("message"),
+                duration_ms=duration_ms,
+            )
+
         elif action == "send_mail":
             try:
                 res = _call_adapter(self.mail.send_mail, account=account, attachments=attachments, cc=cc, bcc=bcc)
@@ -213,8 +240,17 @@ class MailTool(BaseTool):
 
         state: dict[str, Any] = {"action": action, "recipient": recipient, "subject": subject}
 
-        if action == "draft_mail" and self.mail and hasattr(self.mail, "verify_draft_created"):
-            draft_check = self.mail.verify_draft_created(recipient, subject)
+        if action in ("draft_mail", "update_draft") and self.mail and hasattr(self.mail, "verify_draft_created"):
+            account = inputs.get("account") or inputs.get("sender_account", "")
+            import inspect
+            try:
+                sig = inspect.signature(self.mail.verify_draft_created)
+                if "account" in sig.parameters:
+                    draft_check = self.mail.verify_draft_created(recipient, subject, account=account)
+                else:
+                    draft_check = self.mail.verify_draft_created(recipient, subject)
+            except Exception:
+                draft_check = self.mail.verify_draft_created(recipient, subject)
             state["draft_found"] = draft_check.get("verified", False)
             state["evidence"] = draft_check.get("evidence", "")
 
@@ -260,7 +296,7 @@ class MailTool(BaseTool):
                 error=execution_result.error,
             )
 
-        if action == "draft_mail":
+        if action in ("draft_mail", "update_draft"):
             verified = observation.state_data.get("draft_found", execution_result.ok)
             evidence = observation.state_data.get("evidence") or f"Draft confirmed for {recipient}"
             return VerificationResult(

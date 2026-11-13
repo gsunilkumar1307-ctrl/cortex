@@ -54,6 +54,22 @@ class BaseEmailProvider(ABC):
         """
         pass
 
+    def update_draft(
+        self,
+        draft_id: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        old_subject: str = "",
+    ) -> dict[str, Any]:
+        """Update an existing draft without creating duplicate instances."""
+        self.delete_draft(recipient, old_subject or subject)
+        return self.create_draft(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
+
     @abstractmethod
     def send_message(
         self,

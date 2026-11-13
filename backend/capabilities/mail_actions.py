@@ -31,13 +31,24 @@ def _apple_string(val: Any) -> str:
 
 
 class MailAutomation:
-    """Automates Apple Mail (macOS) for reading, drafting, and sending emails."""
+    """Automates Apple Mail (macOS) and Gmail for reading, drafting, and sending emails."""
 
     def __init__(self, dry_run: bool = False) -> None:
         self.system = platform.system().lower()
         self.dry_run = dry_run
         self._sent_records: list[dict[str, Any]] = _sent_records
         self._draft_records: list[dict[str, Any]] = _draft_records
+        self._manager = None
+
+    @property
+    def manager(self):
+        if self._manager is None:
+            try:
+                from backend.integrations.email.manager import MailProviderManager
+            except ImportError:
+                from integrations.email.manager import MailProviderManager
+            self._manager = MailProviderManager(dry_run=self.dry_run)
+        return self._manager
 
     def read_mail(self, limit: int = 5, unread_only: bool = False) -> dict[str, Any]:
         """Reads recent or unread emails from Apple Mail inbox."""
@@ -158,7 +169,7 @@ class MailAutomation:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Creates a new draft email in Apple Mail and opens it."""
+        """Creates a new draft email in Apple Mail or Gmail."""
         if not recipient:
             return {"ok": False, "message": "Recipient email address is required."}
         subject = subject or "No Subject"
@@ -169,6 +180,43 @@ class MailAutomation:
                 if att_path and not os.path.exists(att_path):
                     return {"ok": False, "message": f"Attachment file not found: {att_path}", "error": f"Attachment file not found: {att_path}"}
 
+        # Route to Gmail provider if account indicates Gmail
+        acc_lower = (account or "").lower()
+        if "gmail" in acc_lower or "@gmail.com" in acc_lower:
+            gmail_prov = self.manager.gmail
+            res = gmail_prov.create_draft(
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                account=account,
+                attachments=attachments,
+                cc=cc,
+                bcc=bcc,
+            )
+            record = {
+                "recipient": recipient,
+                "subject": subject,
+                "body": body,
+                "account": account,
+                "attachments": attachments or [],
+                "cc": cc or [],
+                "bcc": bcc or [],
+                "provider": "gmail",
+                "draft_id": res.get("draft_id"),
+                "dry_run": bool(self.dry_run or self.system != "darwin"),
+            }
+            if res.get("ok"):
+                self._draft_records.append(record)
+                verification = self.verify_draft_created(recipient, subject, body, account=account)
+                record["verification"] = verification
+            return {
+                "ok": res.get("ok", False),
+                "message": res.get("message", ""),
+                "provider": "gmail",
+                "draft_id": res.get("draft_id"),
+                "data": res.get("data") or record,
+            }
+
         record = {
             "recipient": recipient,
             "subject": subject,
@@ -177,15 +225,19 @@ class MailAutomation:
             "attachments": attachments or [],
             "cc": cc or [],
             "bcc": bcc or [],
+            "provider": "apple_mail",
+            "draft_id": f"apple-mail-{recipient}-{subject}",
             "dry_run": bool(self.dry_run or self.system != "darwin"),
         }
         if self.dry_run or self.system != "darwin":
             self._draft_records.append(record)
-            verification = self.verify_draft_created(recipient, subject, body)
+            verification = self.verify_draft_created(recipient, subject, body, account=account)
             record["verification"] = verification
             return {
                 "ok": True,
                 "message": f"Draft created for {recipient} with subject '{subject}'. The email has not been sent.",
+                "provider": "apple_mail",
+                "draft_id": record["draft_id"],
                 "data": record,
             }
 
@@ -220,11 +272,13 @@ class MailAutomation:
         try:
             subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True, timeout=5)
             self._draft_records.append(record)
-            verification = self.verify_draft_created(recipient, subject, body)
+            verification = self.verify_draft_created(recipient, subject, body, account=account)
             record["verification"] = verification
             return {
                 "ok": True,
                 "message": f"Draft created for {recipient} with subject '{subject}'. The email has not been sent.",
+                "provider": "apple_mail",
+                "draft_id": record["draft_id"],
                 "data": record,
             }
         except subprocess.CalledProcessError as e:
@@ -240,6 +294,45 @@ class MailAutomation:
             return {"ok": False, "message": "Failed to draft email: Apple Mail automation timed out.", "error": "TimeoutExpired"}
         except Exception as e:
             return {"ok": False, "message": f"Failed to draft email: {e}", "error": str(e)}
+
+    def update_draft(
+        self,
+        draft_id: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        account: str = "",
+        attachments: list[str] | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        old_subject: str = "",
+    ) -> dict[str, Any]:
+        """Updates an existing draft in Apple Mail or Gmail without duplicate draft accumulation."""
+        acc_lower = (account or "").lower()
+        if "gmail" in acc_lower or "@gmail.com" in acc_lower:
+            res = self.manager.gmail.update_draft(
+                draft_id=draft_id,
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                account=account,
+                attachments=attachments,
+                cc=cc,
+                bcc=bcc,
+                old_subject=old_subject,
+            )
+            for d in reversed(self._draft_records):
+                if d.get("provider") == "gmail" and (
+                    d.get("draft_id") == draft_id
+                    or (d.get("recipient", "").lower() == recipient.lower() and d.get("subject") in (old_subject, subject))
+                ):
+                    d.update({"subject": subject, "body": body, "account": account, "attachments": attachments or [], "cc": cc or [], "bcc": bcc or []})
+                    break
+            return res
+        else:
+            self.delete_draft(recipient, old_subject or subject, account=account)
+            res = self.draft_mail(recipient, subject, body, account=account, attachments=attachments, cc=cc, bcc=bcc)
+            return res
 
     def create_email_draft(
         self,
@@ -273,7 +366,7 @@ class MailAutomation:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Sends an email directly via Apple Mail (requires user approval prior to calling)."""
+        """Sends an email directly via Apple Mail or Gmail (requires user approval prior to calling)."""
         if not recipient:
             return {"ok": False, "message": "Recipient email address is required."}
         subject = subject or "No Subject"
@@ -295,6 +388,23 @@ class MailAutomation:
             "timestamp": time.time(),
             "dry_run": bool(self.dry_run or self.system != "darwin"),
         }
+
+        acc_lower = (account or "").lower()
+        if "gmail" in acc_lower or "@gmail.com" in acc_lower:
+            gmail_prov = self.manager.gmail
+            res = gmail_prov.send_message(
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                account=account,
+                attachments=attachments,
+                cc=cc,
+                bcc=bcc,
+            )
+            if res.get("ok"):
+                self._sent_records.append(record)
+                gmail_prov.delete_draft(recipient, subject)
+            return res
 
         is_mocked_subprocess = (
             hasattr(subprocess.run, "mock_calls")
@@ -370,8 +480,12 @@ class MailAutomation:
         except Exception as e:
             return {"ok": False, "message": f"Failed to send email: {e}", "error": str(e)}
 
-    def verify_draft_created(self, recipient: str, subject: str = "", body: str = "") -> dict[str, Any]:
+    def verify_draft_created(self, recipient: str, subject: str = "", body: str = "", account: str = "") -> dict[str, Any]:
         """Verifies that an email draft exists for the recipient and subject."""
+        acc_lower = (account or "").lower()
+        if "gmail" in acc_lower or "@gmail.com" in acc_lower:
+            return self.manager.gmail.verify_draft_exists(recipient, subject)
+
         target = recipient.lower().strip()
         if self.system == "darwin" and not self.dry_run:
             check_script = f"""
@@ -428,8 +542,12 @@ class MailAutomation:
 
         return {"verified": bool(self._draft_records), "evidence": f"Draft recorded in session for {recipient}"}
 
-    def verify_mail_sent(self, recipient: str, subject: str) -> dict[str, Any]:
+    def verify_mail_sent(self, recipient: str, subject: str, account: str = "") -> dict[str, Any]:
         """Independently verifies that an email was sent by querying sent records/mailbox."""
+        acc_lower = (account or "").lower()
+        if "gmail" in acc_lower or "@gmail.com" in acc_lower:
+            return self.manager.gmail.verify_message_sent(recipient, subject)
+
         # 1. Check local session records
         target = recipient.lower().strip()
         for s in reversed(self._sent_records):
@@ -542,6 +660,13 @@ class MailAutomation:
 
     def get_accounts(self) -> list[dict[str, str]]:
         """Returns configured email sending accounts."""
+        try:
+            if hasattr(self, "manager"):
+                accs = self.manager.list_accounts()
+                if accs:
+                    return accs
+        except Exception:
+            pass
         if self.dry_run or self.system != "darwin":
             return [
                 {"name": "Primary Account", "email": "me@cortex.internal"},
@@ -573,7 +698,7 @@ class MailAutomation:
         """Searches authorized address book and contacts."""
         sample_contacts = [
             {"name": "Dr. Shanmukha Nagaraj", "email": "hod.cse@rvce.edu.in", "role": "hod", "department": "Computer Science and Engineering (CSE)", "institution": "RV College of Engineering"},
-            {"name": "Prof. Smith", "email": "prof.smith@university.edu", "role": "professor", "department": "Computer Science", "institution": "State University"},
+            {"name": "Prof. Smith", "email": "prof.smith@university.edu", "role": "project guide / professor", "department": "Computer Science", "institution": "State University"},
             {"name": "Sarah Miller", "email": "sarah.manager@techcorp.io", "role": "manager", "department": "Engineering", "institution": "TechCorp"},
             {"name": "Jessica Vance", "email": "recruiter@innovate.ai", "role": "recruiter", "department": "Talent", "institution": "Innovate AI"},
             {"name": "David Clark", "email": "david@clientpartners.com", "role": "client", "department": "Procurement", "institution": "Client Partners"},
@@ -595,8 +720,15 @@ class MailAutomation:
                 results.append(c)
         return results
 
-    def delete_draft(self, recipient: str, subject: str = "") -> dict[str, Any]:
+    def delete_draft(self, recipient: str, subject: str = "", account: str = "") -> dict[str, Any]:
         """Deletes or cancels a draft email from the drafts mailbox or local store."""
+        acc_lower = (account or "").lower()
+        if "gmail" in acc_lower or "@gmail.com" in acc_lower:
+            try:
+                self.manager.gmail.delete_draft(recipient, subject)
+            except Exception:
+                pass
+
         global _draft_records
         target = recipient.lower().strip()
         _draft_records[:] = [
