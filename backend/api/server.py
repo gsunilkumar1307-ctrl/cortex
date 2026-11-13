@@ -20,7 +20,7 @@ import wave
 import urllib.request
 import urllib.parse
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -95,6 +95,18 @@ class ChatRequest(BaseModel):
     message: str
     source: str = "text"
     preferred_language: Optional[str] = None
+    thread_id: Optional[str] = None
+
+
+class ThreadCreateOrUpdateRequest(BaseModel):
+    id: str
+    title: Optional[str] = None
+    messages: List[dict] = []
+    metadata: Optional[dict] = None
+
+
+class ThreadRenameRequest(BaseModel):
+    title: str
 
 
 class ApproveRequest(BaseModel):
@@ -192,6 +204,181 @@ async def post_chat(req: ChatRequest):
         return orchestrator.chat(cleaned, req.source, preferred_language=req.preferred_language)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def post_chat_stream(req: ChatRequest, request: Request):
+    """
+    SSE streaming endpoint for assistant-ui with progressive text delivery,
+    real-time tool/task events, and safe cancellation support.
+    """
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    async def event_generator():
+        import asyncio
+        import json
+        import datetime
+
+        try:
+            cleaned = strip_wake_word(message)
+            # Emit start event
+            yield f'event: start\ndata: {json.dumps({"status": "started", "query": cleaned, "thread_id": req.thread_id})}\n\n'
+            await asyncio.sleep(0.01)
+
+            if await request.is_disconnected():
+                return
+
+            # Execute orchestrator in a thread worker so the event loop stays responsive
+            result = await asyncio.to_thread(
+                orchestrator.chat,
+                cleaned,
+                req.source,
+                preferred_language=req.preferred_language,
+            )
+
+            full_msg = result.get("message", "")
+            task_dict = result.get("task")
+            lang = result.get("task", {}).get("language") if isinstance(result.get("task"), dict) else "en"
+
+            # Stream progressive chunks of words for natural typing/streaming cadence
+            words = full_msg.split(" ")
+            chunk_size = 4
+            for i in range(0, len(words), chunk_size):
+                if await request.is_disconnected():
+                    return
+                chunk = " ".join(words[i:i + chunk_size])
+                if i + chunk_size < len(words):
+                    chunk += " "
+                yield f'event: text_delta\ndata: {json.dumps({"delta": chunk, "index": i})}\n\n'
+                await asyncio.sleep(0.018)
+
+            # Emit task execution details / generative UI data
+            if task_dict:
+                yield f'event: task_update\ndata: {json.dumps({"task": task_dict})}\n\n'
+
+            # Emit final completion
+            yield f'event: done\ndata: {json.dumps({"message": full_msg, "task": task_dict, "language": lang})}\n\n'
+
+        except asyncio.CancelledError:
+            yield f'event: error\ndata: {json.dumps({"error": "Stream aborted by client"})}\n\n'
+        except Exception as ex:
+            yield f'event: error\ndata: {json.dumps({"error": str(ex)})}\n\n'
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/threads")
+async def get_threads():
+    """List all saved conversation threads for sidebar navigation."""
+    try:
+        threads = orchestrator.memory.list(kind="thread")
+        result = []
+        for t in threads:
+            p = t.get("payload", {})
+            result.append({
+                "id": t["id"],
+                "title": p.get("title", "Untitled Conversation"),
+                "preview": p.get("preview", ""),
+                "messageCount": len(p.get("messages", [])),
+                "createdAt": t.get("createdAt"),
+                "updatedAt": p.get("updatedAt", t.get("createdAt")),
+            })
+        return {"threads": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/threads")
+async def post_thread(req: ThreadCreateOrUpdateRequest):
+    """Save or update a conversation thread with full message history."""
+    try:
+        import datetime
+        existing = orchestrator.memory.get(req.id)
+        preview = ""
+        for m in reversed(req.messages):
+            c = m.get("content") or m.get("text") or ""
+            if isinstance(c, str) and c.strip():
+                preview = c.strip()[:100]
+                break
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and part.get("text"):
+                        preview = part["text"][:100]
+                        break
+                if preview:
+                    break
+
+        title = req.title
+        if not title:
+            if existing and existing.get("title"):
+                title = existing["title"]
+            else:
+                for m in req.messages:
+                    if m.get("role") == "user":
+                        c = m.get("content")
+                        if isinstance(c, str) and c.strip():
+                            title = c.strip()[:40]
+                            break
+                        elif isinstance(c, list):
+                            for part in c:
+                                if isinstance(part, dict) and part.get("text"):
+                                    title = part["text"][:40]
+                                    break
+                            if title:
+                                break
+                if not title:
+                    title = "New Conversation"
+
+        payload = {
+            "title": title,
+            "preview": preview,
+            "messages": req.messages,
+            "metadata": req.metadata or {},
+            "updatedAt": datetime.datetime.utcnow().isoformat(),
+        }
+        orchestrator.memory.put(req.id, "thread", payload)
+        return {"ok": True, "id": req.id, "title": title}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/threads/{thread_id}")
+async def get_thread(thread_id: str):
+    """Retrieve full thread message history."""
+    thread = orchestrator.memory.get(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    return {"id": thread_id, "thread": thread}
+
+
+@app.delete("/threads/{thread_id}")
+async def delete_thread(thread_id: str):
+    """Delete a conversation thread."""
+    deleted = orchestrator.memory.delete(thread_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    return {"ok": True, "deleted": thread_id}
+
+
+@app.patch("/threads/{thread_id}")
+async def patch_thread(thread_id: str, req: ThreadRenameRequest):
+    """Rename a conversation thread."""
+    thread = orchestrator.memory.get(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    thread["title"] = req.title.strip()
+    orchestrator.memory.put(thread_id, "thread", thread)
+    return {"ok": True, "id": thread_id, "title": thread["title"]}
 
 def is_audio_silent(wav_bytes: bytes, threshold: int = 350) -> bool:
     """Checks whether the WAV audio has sufficient energy to contain human speech."""
