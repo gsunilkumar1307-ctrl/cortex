@@ -11,9 +11,6 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.15.36",
-    "@assistant-ui/react-markdown": "^0.14.26",
-    "@assistant-ui/react-syntax-highlighter": "^0.14.7",
     "@vitejs/plugin-react": "^4.3.0",
     "electron": "^33.0.0",
     "framer-motion": "^11.0.0",
