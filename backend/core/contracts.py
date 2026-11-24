@@ -16,6 +16,19 @@ class RiskLevel(str, Enum):
     BLOCKED = "blocked"
 
 
+class MailDeliveryStatus(str, Enum):
+    """
+    Explicit delivery lifecycle states for email operations (Phase P7.2).
+    Only SENT_VERIFIED represents confirmed email delivery.
+    """
+    BLOCKED = "BLOCKED"
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    SEND_ATTEMPTED = "SEND_ATTEMPTED"
+    DELIVERY_UNCONFIRMED = "DELIVERY_UNCONFIRMED"
+    SENT_VERIFIED = "SENT_VERIFIED"
+    SEND_FAILED = "SEND_FAILED"
+
+
 class TaskStatus(str, Enum):
     # ── Canonical Phase 1 States (Spec Section 5.1) ───────────
     QUEUED = "queued"
@@ -53,6 +66,9 @@ class TaskStatus(str, Enum):
     CANCELED = "canceled"
     BLOCKED = "blocked"
     UNCERTAIN = "uncertain"
+    UNVERIFIED = "needs_attention"
+    REQUEST_RECEIVED = "received"
+    WAITING_FOR_USER_INPUT = "awaiting_clarification"
 
 
 class IllegalStateTransitionError(ValueError):
@@ -86,6 +102,8 @@ def canonical_status(status: TaskStatus | str) -> TaskStatus:
         "approved": TaskStatus.EXECUTING,
         "need_info": TaskStatus.AWAITING_CLARIFICATION,
         "waiting_input": TaskStatus.AWAITING_CLARIFICATION,
+        "waiting_for_user_input": TaskStatus.AWAITING_CLARIFICATION,
+        "request_received": TaskStatus.QUEUED,
         "awaiting_clarification": TaskStatus.AWAITING_CLARIFICATION,
         "running": TaskStatus.EXECUTING,
         "executing": TaskStatus.EXECUTING,
@@ -101,6 +119,7 @@ def canonical_status(status: TaskStatus | str) -> TaskStatus:
         "failed": TaskStatus.FAILED,
         "blocked": TaskStatus.NEEDS_ATTENTION,
         "uncertain": TaskStatus.NEEDS_ATTENTION,
+        "unverified": TaskStatus.NEEDS_ATTENTION,
     }
     return alias_map.get(val, TaskStatus.FAILED)
 
@@ -115,12 +134,12 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.EXECUTING, TaskStatus.PAUSED_MODEL_UNAVAILABLE, TaskStatus.CANCELLED, TaskStatus.FAILED
     },
     TaskStatus.AWAITING_CLARIFICATION: {
-        TaskStatus.UNDERSTANDING, TaskStatus.PLANNED, TaskStatus.AWAITING_APPROVAL,
+        TaskStatus.UNDERSTANDING, TaskStatus.PLANNED, TaskStatus.EXECUTING, TaskStatus.AWAITING_APPROVAL,
         TaskStatus.CANCELLED, TaskStatus.FAILED
     },
     TaskStatus.PLANNED: {
         TaskStatus.AWAITING_APPROVAL, TaskStatus.EXECUTING, TaskStatus.PAUSED_PERMISSION_REQUIRED,
-        TaskStatus.CANCELLED, TaskStatus.FAILED
+        TaskStatus.PAUSED_MODEL_UNAVAILABLE, TaskStatus.CANCELLED, TaskStatus.FAILED
     },
     TaskStatus.AWAITING_APPROVAL: {
         TaskStatus.EXECUTING, TaskStatus.AWAITING_CLARIFICATION, TaskStatus.CANCELLED, TaskStatus.FAILED
@@ -213,6 +232,7 @@ class TaskCommand(str, Enum):
     RESTART = "restart"
     ASK_QUESTION = "ask_question"
     WEB_SEARCH = "web_search"
+    FETCH_WEB_CONTENT = "fetch_web_content" # Retrieve readable web content from URL via MCP Fetch
     # ── Phase 4: Browser & Vision ──────────────────────────
     OPEN_URL = "open_url"           # Navigate browser to a URL
     BROWSER_CLICK = "browser_click" # Click an element on a web page
@@ -227,6 +247,9 @@ class TaskCommand(str, Enum):
     SEARCH_MAIL = "search_mail"     # Search emails by query/sender
     EMAIL_BRIEFING = "email_briefing" # Executive briefing of emails
     EXTRACT_ACTIONS = "extract_actions" # Action item extraction from emails
+    REPLY_MAIL = "reply_mail"       # Reply to email thread (creates draft)
+    FORWARD_MAIL = "forward_mail"   # Forward email message (creates draft)
+    EMAIL_INVESTIGATION = "email_investigation" # Conversational email investigation & follow-ups
     # ── Phase 7: Personal Assistant, Files & Calendar ──────
     SEARCH_FILES = "search_files"   # Search files
     READ_FILE = "read_file"         # Read file
@@ -246,6 +269,12 @@ class TaskCommand(str, Enum):
     INSPECT_APP = "inspect_app"                   # Inspect application state (running, windows)
     MOVE_FILE = "move_file"                       # Move or rename file in safe sandbox
     CREATE_DOCUMENT = "create_document"           # Create structured document
+    CREATE_DIRECTORY = "create_directory"         # Create directory / folder
+    EDIT_FILE = "edit_file"                       # Edit file content
+    APPEND_FILE = "append_file"                   # Append content to file
+    COPY_FILE = "copy_file"                       # Copy file
+    LIST_DIRECTORY = "list_directory"             # List contents of directory
+    GET_FILE_INFO = "get_file_info"               # Get metadata and info of file
     # ── Screen Intelligence & Autonomous Desktop Operator ──
     OBSERVE_SCREEN = "observe_screen"             # Multi-source desktop perception
     RESOLVE_UI_ELEMENT = "resolve_ui_element"     # Resolve UI element target
@@ -776,6 +805,72 @@ class FinalResult:
         }
 
 
+class AdapterExecutionStatus(str, Enum):
+    """Execution status for Application Adapter actions."""
+    ATTEMPTED = "attempted"
+    EXECUTED = "executed"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    FAILED = "failed"
+
+
+@dataclass
+class AdapterResult:
+    """Structured execution output produced by an Application Adapter."""
+    success: bool
+    status: AdapterExecutionStatus
+    action: str
+    message: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    duration_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "status": self.status.value,
+            "action": self.action,
+            "message": self.message,
+            "data": self.data,
+            "error": self.error,
+            "durationMs": self.duration_ms,
+        }
+
+
+@dataclass
+class AdapterObservation:
+    """State observation captured by an Application Adapter."""
+    target: str
+    state_data: dict[str, Any] = field(default_factory=dict)
+    raw_output: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target": self.target,
+            "stateData": self.state_data,
+            "rawOutput": self.raw_output,
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class AdapterRecoveryResult:
+    """Recovery and diagnostic strategy produced by an Application Adapter."""
+    can_retry: bool
+    strategy: str  # "retry", "abort", "escalate", "resolve_as_success"
+    message: str
+    suggested_params: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "canRetry": self.can_retry,
+            "strategy": self.strategy,
+            "message": self.message,
+            "suggestedParams": self.suggested_params,
+        }
+
+
 @dataclass
 class Task:
     intent: str = ""
@@ -789,6 +884,7 @@ class Task:
     error: str | None = None
     audit_trail: list[AuditEvent] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     language: LanguageCode = LanguageCode.ENGLISH
     context: TaskContext | None = None
     plan: Plan | None = None
@@ -888,6 +984,7 @@ class Task:
             "auditTrail": [event.to_dict() for event in self.audit_trail],
             "params": self.params,
             "language": self.language.value,
+            "metadata": self.metadata,
             "stateVersion": self.state_version,
             "cancellationRequested": self.cancellation_requested,
             "approvalHash": self.approval_hash or self.params.get("approval_hash"),
@@ -895,7 +992,7 @@ class Task:
             "updatedAt": self.updated_at,
         }
         if self.context:
-            d["context"] = self.context.to_dict()
+            d["context"] = self.context.to_dict() if hasattr(self.context, "to_dict") else self.context
         if self.plan:
             d["plan"] = self.plan.to_dict()
         if self.approval_request:
@@ -917,6 +1014,7 @@ def task_from_dict(payload: dict[str, Any]) -> Task:
         result=payload.get("result"),
         error=payload.get("error"),
         params=dict(payload.get("params", {})),
+        metadata=dict(payload.get("metadata", {})),
         language=LanguageCode.from_string(payload.get("language", "en")),
         state_version=int(payload.get("stateVersion", 1)),
         cancellation_requested=bool(payload.get("cancellationRequested", False)),
@@ -1031,9 +1129,92 @@ def command_from_intent(intent: str) -> TaskCommand:
         text = prefix_match.group(1).strip()
         if is_self_capability_query(text):
             return TaskCommand.ASK_QUESTION
+
+    # ── High-Priority Filesystem & MCP Operations ───────────
+    # 0. Open file / document / folder
+    # e.g. 'Open example.txt from my Desktop in TextEdit', 'Open TokenLens System Architecture Diagram.pdf in Preview'
+    if bool(re.search(r"\bopen\s+(.+?\.[a-zA-Z0-9]+|\S+)\s+(?:from\s+[^\s]+\s+)?in\s+([A-Za-z0-9\s]+)", text, re.IGNORECASE)) and not any(w in text for w in ("browser", "safari", "chrome", "firefox", "finder")):
+        return TaskCommand.OPEN_APP
+
+    # Open document/file with extension (e.g. 'Open TokenLens System Architecture Diagram.pdf')
+    if bool(re.search(r"^open\s+.+?\.[a-zA-Z0-9]{1,5}$", text, re.IGNORECASE)) and not any(w in text for w in ("safari", "chrome", "firefox", "browser")):
+        return TaskCommand.OPEN_APP
+
+    # Open folder (e.g. 'Open CortexDemo folder', 'Open the CortexDemo folder')
+    if bool(re.search(r"^open\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s+folder\b", text, re.IGNORECASE)):
+        return TaskCommand.OPEN_APP
+
+    # Open document query (e.g. 'Open my architecture diagram', 'Open the architecture PDF')
+    if bool(re.search(r"^open\s+(?:my\s+|the\s+)?(?:architecture\s+diagram|diagram|pdf|presentation|report|document)\b", text, re.IGNORECASE)):
+        return TaskCommand.OPEN_APP
+
+    # 1. Folder / Directory Creation
+    if (
+        text.startswith(("create folder", "create a folder", "create new folder", "create a new folder", "make folder", "make a folder", "make directory", "make a directory", "mkdir", "create directory", "create a directory"))
+        or bool(re.search(r"^(?:create|make)\s+(?:a\s+)?(?:new\s+)?(?:folder|directory)\b", text, re.IGNORECASE))
+        or bool(re.search(r"\b(?:create|make)\s+(?:a\s+)?(?:new\s+)?folder\s+name\s+it\s+", text, re.IGNORECASE))
+        or text.startswith("new folder ") or text in ("new folder", "create folder", "create new folder", "create directory")
+    ):
+        return TaskCommand.CREATE_DIRECTORY
+
+    # 2. File Creation / Writing
+    if (
+        bool(re.search(r"\b(?:create|make|write|save)\s+(?:an?\s+)?(?:empty\s+)?(?:text\s+)?file\b", text, re.IGNORECASE))
+        or bool(re.search(r"\b(?:create|write|save)\s+(?:an?\s+)?(?:comparison\s+)?(?:report|summary|document|file)\s+(?:to|in|at)\s+", text, re.IGNORECASE))
+        or text.startswith(("new file", "new file creation", "create file", "create a file", "create a text file", "create text file", "create a new file", "create new file", "make a file", "make file", "write file", "write a file", "save file", "save a file", "save report", "save a report", "save comparison", "save the report"))
+        or bool(re.search(r"^(?:create|write|put|place|add|save)\s+[a-zA-Z0-9_\-\./~]+\.[a-zA-Z0-9]+\s+(?:on|in|inside|at|there|to)\b", text, re.IGNORECASE))
+        or bool(re.search(r"^(?:create|write|put|place|save)\s+[a-zA-Z0-9_\-\./~]+\.[a-zA-Z0-9]+\b", text, re.IGNORECASE))
+        or bool(re.search(r"\bsave\s+(?:the\s+|a\s+)?(?:report|document|findings|results|file)\s+to\s+", text, re.IGNORECASE))
+    ):
+        return TaskCommand.WRITE_FILE
+
+    # 3. Read File
+    if (
+        text.startswith(("read file", "read a file", "read it back", "read back", "read it", "view file", "show file", "cat file", "display file", "inspect file"))
+        or bool(re.search(r"^read\s+[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+\b", text, re.IGNORECASE))
+        or bool(re.search(r"^read\s+.+?\s+from\s+(?:my\s+)?(?:desktop|documents|downloads|cortexworkspace|[a-zA-Z0-9_\-~/]+)", text, re.IGNORECASE))
+        or bool(re.search(r"^read\s+(?:the\s+)?(?:file|presentation|document|pdf|report)\s+", text, re.IGNORECASE))
+        or (bool(re.search(r"^read\s+[a-zA-Z0-9_\-\s]+(?:\.[a-zA-Z0-9]+)?$", text, re.IGNORECASE)) and not any(w in text for w in ("mail", "email", "inbox", "message", "note", "clipboard")))
+    ):
+        return TaskCommand.READ_FILE
+
+    # 4. Search Files
+    if (
+        text.startswith(("find file", "search file", "look for file", "locate file", "find the file"))
+        or bool(re.search(r"^find\s+(?:my\s+)?(?:project\s+report|report|document|file|folder|notes|draft|presentation|architecture|pdf)\b", text, re.IGNORECASE))
+        or bool(re.search(r"^find\s+[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+\b", text, re.IGNORECASE))
+    ):
+        return TaskCommand.SEARCH_FILES
+
+    # 5. Append / Edit File
+    if text.startswith(("append to file", "append file", "add to file")):
+        return TaskCommand.APPEND_FILE
+    if text.startswith(("edit file", "modify file", "update file")):
+        return TaskCommand.EDIT_FILE
+
+    # 6. Move / Copy File
+    if (
+        text.startswith(("move file ", "move the file ", "rename file ", "rename the file "))
+        or bool(re.search(r"^move\s+.+?\s+(?:in|into|to)\s+", text, re.IGNORECASE))
+        or bool(re.search(r"^rename\s+.+?\s+to\s+", text, re.IGNORECASE))
+    ):
+        return TaskCommand.MOVE_FILE
+    if (
+        text.startswith(("copy file ", "duplicate file ", "copy the file "))
+        or bool(re.search(r"^copy\s+.+?\s+(?:in|into|to)\s+", text, re.IGNORECASE))
+    ):
+        return TaskCommand.COPY_FILE
+
+    # 7. List Directory
+    if text.startswith(("list directory", "list folder", "show folder contents", "directory tree")):
+        return TaskCommand.LIST_DIRECTORY
     if text.startswith(("calculate ", "compute ")) or (text.startswith(("what is ", "what's ")) and any(word in text for word in (" plus ", " minus ", " times ", " divided by ", "+", "-", "*", "/"))) or any(word in text for word in (" plus ", " minus ", " times ", " divided by ")):
         return TaskCommand.CALCULATE
-    if text.startswith(("write note ", "write a note ", "create note ", "create a note ", "take a note ", "note ", "open that note", "open the note", "open this note", "view that note")) or text in ("open that note", "open the note", "open this note"):
+    if (
+        bool(re.search(r"\b(?:create|write|take)\s+(?:a\s+)?note\b", text, re.IGNORECASE))
+        or text.startswith(("write note ", "write a note ", "create note ", "create a note ", "take a note ", "note ", "open that note", "open the note", "open this note", "view that note", "append to note ", "append note ", "add to note ", "add to the note ", "add point to note ", "append to the note "))
+        or text in ("open that note", "open the note", "open this note")
+    ):
         return TaskCommand.WRITE_NOTE
     if (
         text.startswith((
@@ -1041,7 +1222,7 @@ def command_from_intent(intent: str) -> TaskCommand:
             "prepare message ", "prepare a message ", "draft message ", "draft a message ",
             "create message ", "create a message ", "compose message ", "compose a message ",
             "prepare whatsapp ", "prepare a whatsapp ", "draft whatsapp ", "draft a whatsapp ",
-            "send whatsapp ", "send a whatsapp "
+            "send whatsapp ", "send a whatsapp ", "whatsapp "
         ))
         or (text.startswith(("send ", "prepare ", "draft ", "create ")) and any(m in text for m in ("message", "whatsapp", "sms")) and not any(e in text for e in ("mail", "email")))
         or (any(m in text for m in ("whatsapp", "ವಾಟ್ಸಾಪ್", "व्हाट्सएप", "வாட்ஸ்அப்", "వాట్సాప్")) and any(v in text for v in ("message", "send", "ಸಂದೇಶ", "ಕಳುಹಿಸಿ", "ಕಳಿಸಿ", "संदेश", "भेजें", "भेजो", "मैसेज", "செய்தி", "அனுப்பு", "సందేశం", "పంపు")))
@@ -1095,6 +1276,82 @@ def command_from_intent(intent: str) -> TaskCommand:
         return TaskCommand.CLICK_ELEMENT
     if text.startswith(("type into ", "type in ", "fill in ")) and not any(w in text for w in ("browser", "web")):
         return TaskCommand.TYPE_IN_ELEMENT
+
+    # ── Phase P2: Fetch Web Content (MCP Fetch) ────────────
+    has_http = "http://" in text or "https://" in text
+    fetch_verbs = (
+        "read", "summarize", "summary", "explain", "fetch", "extract", "retrieve",
+        "what is", "what does", "compare", "analyze", "points from", "key points", "contents of", "look at"
+    )
+    is_explicit_browser = any(w in text for w in (
+        "in safari", "in chrome", "in browser", "in firefox", "open browser to", "navigate to",
+        "open ", "browse ", "visit ", "go to ", "inspect", "click", "snapshot", "verify"
+    ))
+    if has_http and any(v in text for v in fetch_verbs) and not is_explicit_browser:
+        return TaskCommand.FETCH_WEB_CONTENT
+    if has_http and text.startswith(("fetch ", "curl ", "get page ", "read webpage ", "read page ", "summarize page ", "summarize url ", "read url ")) and not is_explicit_browser:
+        return TaskCommand.FETCH_WEB_CONTENT
+    if has_http and "compare" in text and not is_explicit_browser:
+        return TaskCommand.FETCH_WEB_CONTENT
+
+    # If prompt explicitly specifies open/visit/browse/navigate with a URL, route to OPEN_URL
+    if has_http and (text.startswith(("open ", "visit ", "go to ", "browse ", "navigate ")) or any(w in text for w in ("inspect", "verify", "page", "webpage"))):
+        return TaskCommand.OPEN_URL
+
+    # ── Phase P3: Playwright MCP-First Browser Automation ────
+    KNOWN_WEB_DESTINATIONS = (
+        "wikipedia", "github", "flipkart", "amazon", "aws", "youtube",
+        "reddit", "stackoverflow", "netflix", "linkedin", "google maps",
+        "hotstar", "notion", "figma", "canva", "medium", "spotify", "docs.aws",
+        "tradingview", "trading view", "sundirect", "sun direct", "google", "apple", "twitter", "x",
+        "claude", "anthropic"
+    )
+
+    # Check for "open/go to/browse <website> [and / comma ...]"
+    m_open_site = re.match(
+        r"^(?:open|go\s+to|visit|browse\s+to|navigate\s+to)\s+(?:the\s+)?([a-zA-Z0-9_\-\.]+)(?:\s+(?:docs?|documentation|website|site))?(?:[,\s]+(?:and\s+|to\s+|search\s+|find\s+|check\s+|go\s+|look\s+).*|[,\s]+.+)?\.?$",
+        text,
+        re.IGNORECASE,
+    )
+    if m_open_site:
+        candidate_site = m_open_site.group(1).lower().strip(". ,")
+        if (
+            candidate_site in KNOWN_WEB_DESTINATIONS
+            or candidate_site.endswith((".com", ".org", ".io", ".net", ".edu", ".in", ".gov", ".so", ".ai", ".app"))
+            or "documentation" in text
+            or "docs" in text
+            or any(w in text for w in ("website", "site", "webpage", "page", "homepage", "portal", "search", "find", "play", "watch", "download", "login", "sign in", "inspect", "verify", "explain", "features", "url", "title"))
+        ) and candidate_site not in ("safari", "chrome", "firefox", "browser", "finder"):
+            return TaskCommand.OPEN_URL
+
+    # "Search <website> for <query>" (e.g. "Search Wikipedia for quantum computing and explain it", "Search Stack Overflow for Python asyncio examples")
+    # or "Search for <query> on/in <website>" (e.g. "Search for ASUS laptops on Amazon")
+    if (
+        bool(re.search(r"^search\s+(?:on\s+)?(?:the\s+)?(wikipedia|github|amazon|flipkart|youtube|reddit|google|stackoverflow|notion|canva|nvidia|[a-zA-Z0-9_\-\.]+\.(?:com|org|io|net|so))\s+(?:for\s+)?", text, re.IGNORECASE))
+        or bool(re.search(r"^search\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+(wikipedia|github|amazon|flipkart|youtube|reddit|google|stackoverflow|notion|canva|nvidia|[a-zA-Z0-9_\-\.]+\.(?:com|org|io|net|so))\b", text, re.IGNORECASE))
+        or (bool(re.search(r"^search\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\.]+)\s+(?:for\s+)(.+)$", text, re.IGNORECASE))
+            and re.search(r"^search\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\.]+)\s+(?:for\s+)(.+)$", text, re.IGNORECASE).group(1).lower() not in ("file", "files", "email", "emails", "mail", "notes", "calendar", "web", "internet"))
+    ):
+        return TaskCommand.OPEN_URL
+
+    # Media playback on web platforms (e.g. "Play Believer on YouTube", "Watch tere naam tuu on YouTube")
+    if bool(re.search(r"^(?:play|watch|stream|listen\s+to)\s+.+?\s+(?:on|in)\s+(?:the\s+)?([a-zA-Z0-9_\-\.]+)", text, re.IGNORECASE)):
+        cand = re.search(r"^(?:play|watch|stream|listen\s+to)\s+.+?\s+(?:on|in)\s+(?:the\s+)?([a-zA-Z0-9_\-\.]+)", text, re.IGNORECASE).group(1).lower()
+        if cand not in ("safari", "finder", "notes"):
+            return TaskCommand.OPEN_URL
+
+    # "Find AWS S3 documentation..."
+    if bool(re.search(r"^find\s+(?:the\s+)?(aws|github|wikipedia|flipkart|amazon)\s+(?:s3\s+)?documentation\b", text, re.IGNORECASE)):
+        return TaskCommand.OPEN_URL
+
+    # Multi-turn comparison: "Compare the second and third", "Compare the top three"
+    if bool(re.search(r"^compare\s+(?:the\s+)?(?:first|second|third|fourth|fifth|top|\d+(?:st|nd|rd|th)?)\b", text, re.IGNORECASE)):
+        return TaskCommand.FETCH_WEB_CONTENT
+
+    # Multi-turn export / Excel file creation: "Create an Excel file with these results"
+    if bool(re.search(r"\b(?:create|make|write|generate|export)\s+(?:an?\s+)?(?:excel|csv|spreadsheet|sheets?)\s+(?:file|document)?\s+(?:with|using|from)\s+(?:these|the|previous|recent)\s+results\b", text, re.IGNORECASE)):
+        return TaskCommand.WRITE_FILE
+
     if (
         text.startswith(("open url ", "go to ", "visit ", "browse to ", "navigate to "))
         or (("http://" in text or "https://" in text or ".com" in text or ".org" in text) and "open " in text)
@@ -1111,13 +1368,116 @@ def command_from_intent(intent: str) -> TaskCommand:
     if text.startswith(("scrape ", "scrape web ", "read web page ", "extract from web ")):
         return TaskCommand.BROWSER_SCRAPE
     # ── Phase 5: Mail Automation (must precede generic text typing) ─────────
-    if any(phrase in text for phrase in (
-        "summarize email", "summarize emails", "summarize my email", "summarize my emails",
-        "summarize inbox", "summarize my inbox", "summarize unread email", "summarize unread emails",
-        "email summary", "summary of my emails", "summary of my inbox", "summary of unread emails",
-        "give me a summary of my email", "give me a summary of my emails", "give me a summary of my inbox"
-    )):
+    # Inbox Intelligence / Action Item Detection (Goal-Oriented Batch 2)
+    if (
+        re.search(
+            r"\b(?:is\s+there\s+anything\s+i\s+need\s+to\s+respond\s+to|"
+            r"(?:what|which)\s+emails?\s+(?:require|need)\s+(?:(?:my\s+)?attention|responses?|a\s+response|replies|a\s+reply))\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:do\s+i\s+have\s+any\s+pending\s+replies|"
+            r"(?:is\s+)?anyone\s+waiting\s+(?:for|on)\s+(?:me|my\s+(?:response|reply))|"
+            r"did\s+anyone\s+ask\s+me\s+(?:a\s+question|to\s+do\s+(?:something|anything)|something|anything))\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:what\s+should\s+i\s+take\s+care\s+of(?:\s+today)?|"
+            r"what\s+do\s+i\s+need\s+to\s+take\s+care\s+of(?:\s+today)?)\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:did\s+anyone\s+send\s+me\s+any\s+important\s+requests?|"
+            r"(?:are\s+there\s+)?any\s+deadlines\s+in\s+my\s+(?:emails?|inbox|messages?)|"
+            r"deadlines?\s+in\s+(?:my\s+)?(?:emails?|inbox|messages?)|"
+            r"do\s+i\s+have\s+any\s+(?:upcoming\s+)?deadlines|"
+            r"any\s+upcoming\s+deadlines|"
+            r"what\s+are\s+my\s+(?:upcoming\s+)?deadlines|"
+            r"check\s+(?:my\s+)?(?:upcoming\s+)?deadlines)\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:find\s+emails?\s+where\s+i\s+need\s+to\s+take\s+action|"
+            r"emails?\s+where\s+i\s+need\s+to\s+take\s+action)\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:what\s+am\s+i\s+supposed\s+to\s+follow\s+up\s+on|"
+            r"what\s+should\s+i\s+follow\s+up\s+on|"
+            r"are\s+there\s+any\s+pending\s+follow-?ups?|"
+            r"pending\s+follow-?ups?\s+in\s+(?:my\s+)?(?:emails?|inbox))\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:have\s+i\s+missed\s+any\s+important\s+emails?|"
+            r"did\s+i\s+miss\s+any\s+important\s+emails?)\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:emails?\s+(?:that\s+)?(?:require|need)\s+(?:an?\s+)?(?:action|responses?|replies)|"
+            r"emails?\s+requiring\s+(?:an?\s+)?(?:action|response|my\s+attention)|"
+            r"action\s+items?\s+(?:in|from)\s+(?:my\s+)?(?:email|emails|inbox))\b",
+            text, re.IGNORECASE
+        )
+        or re.search(
+            r"\b(?:pending\s+replies|any\s+pending\s+replies|"
+            r"emails?\s+needing\s+(?:my\s+)?attention|"
+            r"emails?\s+needing\s+responses?)\b",
+            text, re.IGNORECASE
+        )
+        or any(phrase in text for phrase in (
+            "anything to respond to", "emails needing attention", "emails needing response", "emails needing responses", "pending email follow-ups",
+            "extract action items", "extract email actions", "action items in email", "what emails need responses", "what emails need a response",
+            "do i have any pending replies", "is anyone waiting for me", "did anyone ask me a question", "what emails require my attention",
+            "which emails require my attention", "which emails need my attention", "do i have any upcoming deadlines", "any upcoming deadlines",
+            "what should i take care of today", "did anyone send me any important requests", "are there any deadlines in my emails",
+            "find emails where i need to take action", "what am i supposed to follow up on", "have i missed any important emails",
+            "ನಾನು ಉತ್ತರಿಸಬೇಕಾದ", "ಗಮನಿಸಬೇಕಾದ ಇಮೇಲ್", "ಬಾಕಿ ಉಳಿದಿರುವ ಇಮೇಲ್", "ಉತ್ತರಿಸಬೇಕಾದ ಇಮೇಲ್",
+            "क्या मुझे किसी ईमेल का जवाब देना है", "किन ईमेल पर ध्यान देना है", "लंबित ईमेल", "जवाब देने वाले ईमेल",
+            "நான் பதிலளிக்க வேண்டிய", "கவனிக்க வேண்டிய மின்னஞ்சல்கள்",
+            "నేను సమాధానం ఇవ్వాల్సిన", "శ్రద్ధ వహించాల్సిన ఇమెయిల్"
+        ))
+    ):
+        return TaskCommand.EXTRACT_ACTIONS
+    if (
+        re.search(r"\b(?:summarize|summarise|summary\s+of|give\s+me\s+a\s+summary\s+of)\b.*\b(?:email|emails|mail|messages?|inbox)\b", text, re.IGNORECASE)
+        or any(phrase in text for phrase in (
+            "summarize email", "summarize emails", "summarize my email", "summarize my emails",
+            "summarize inbox", "summarize my inbox", "summarize unread email", "summarize unread emails",
+            "email summary", "summary of my emails", "summary of my inbox", "summary of unread emails",
+            "give me a summary of my email", "give me a summary of my emails", "give me a summary of my inbox"
+        ))
+    ):
         return TaskCommand.SUMMARIZE_MAIL
+    # ── Phase P7.6: Conversational Email Investigation & Follow-ups ──
+    if (
+        re.search(r"\b(?:what\s+(?:are\s+they|is\s+(?:the\s+sender|it))\s+asking(?:\s+me)?\s+to\s+do|what\s+do\s+they\s+want|what\s+does\s+(?:the\s+email|it)\s+say)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:when\s+is\s+the\s+deadline|what\s+is\s+the\s+deadline|is\s+there\s+a\s+deadline)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:show\s+(?:me\s+)?(?:that|the|this)\s+(?:email|mail|message)|show\s+(?:me\s+)?(?:the\s+)?full\s+(?:mail|email|message)|display\s+(?:that|the|this)\s+(?:email|mail)|read\s+(?:that|the|this)\s+(?:email|mail))\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:explain|detail|summarize|show)\s+(?:the\s+)?(?:first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|last|latest)\s+(?:email|mail|message)\b", text, re.IGNORECASE)
+        or re.search(r"\bwhat\s+is\s+(?:this|that|the)\s+email\s+about\b", text, re.IGNORECASE)
+        or re.search(r"\bwho\s+sent\s+(?:it|that|this|the\s+email)\b", text, re.IGNORECASE)
+    ):
+        return TaskCommand.EMAIL_INVESTIGATION
+
+    if (
+        re.search(r"\b(?:find|search|locate|filter|ask\s+about)\b.*\b(?:email|emails|mail|mails|messages|inbox)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:show|get|list|display)\b.*\b(?:email|emails|mail|mails)\s+(?:from|about|regarding|with|received|sent|containing)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:do\s+i\s+have|did\s+i\s+receive|did\s+i\s+get|check)\s+(?:any\s+)?(?:email|emails|mail|mails|messages?)\b", text, re.IGNORECASE)
+        or re.search(r"\bdid\s+[\w\s.-]+\s+send\s+me\s+(?:any|an|anything|emails?|mails?)\b", text, re.IGNORECASE)
+        or (re.search(r"\b(?:any\s+)?(?:email|emails|mail|mails)\s+(?:from|about|regarding|with|received|sent|containing)\b", text, re.IGNORECASE) and not text.startswith(("send ", "write ", "draft ", "compose ", "prepare ", "forward ", "reply ")))
+        or re.search(r"\b(?:emails?\s+received\s+between)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:latest\s+reply\s+from|reply\s+from)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:interview\s+invitation|invitation\s+i\s+received)\b", text, re.IGNORECASE)
+        or any(phrase in text for phrase in (
+            "find email", "search email", "search mail", "find emails", "search emails",
+            "search my mail", "search my inbox", "find the email", "find the latest email",
+            "latest email from", "unread emails", "unread mail", "show unread emails",
+            "show unread mail", "emails from", "emails about", "search all accounts",
+            "mails from", "any mails from", "any mail from", "any email from", "any emails from"
+        ))
+    ):
+        return TaskCommand.SEARCH_MAIL
     if any(phrase in text for phrase in (
         "read email", "read emails", "read my email", "read my emails",
         "check email", "check my email", "check emails", "check my emails",
@@ -1126,23 +1486,79 @@ def command_from_intent(intent: str) -> TaskCommand:
         "get my emails", "get recent emails", "show my emails", "show recent emails"
     )):
         return TaskCommand.READ_MAIL
-    if text.startswith(("send email ", "send an email ", "send mail ", "send a mail ", "email to ")) or (text.startswith("email ") and (" saying " in text or " subject " in text or " with subject " in text)):
-        return TaskCommand.SEND_MAIL
+    # ── Phase P7.4: Conversational Reply & Forward Intelligence ──
+    # Check for queries about what a sender said in their last email or if someone replied
     if (
-        re.search(r"\b(?:draft|write|compose|prepare|create)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+)?(?:draft\s+)?(?:email|mail|draft)\b", text)
-        or text.startswith((
-            "draft email ", "draft an email ", "create draft email ", "create a draft email ",
-            "create a professional draft", "create a formal draft", "create a draft",
-            "write a draft email ", "write draft email ", "draft mail ", "draft a mail ",
-            "prepare an email ", "compose email ", "compose an email ",
-            "write a polite email", "write an email", "write email", "write mail", "write a mail"
-        ))
+        re.search(r"\bwhat\s+did\s+.+?\s+say\s+in\s+(?:their|his|her|the)?\s*(?:last\s+)?(?:email|mail|message)\b", text, re.IGNORECASE)
+        or re.search(r"\bwhat\s+(?:does|is\s+in)\s+(?:the\s+)?(?:last\s+)?(?:email|mail|message)\s+from\b", text, re.IGNORECASE)
+        or re.search(r"\bdid\s+.+?\s+(?:reply|respond|write\s+back|send\s+(?:an?\s+)?(?:email|mail))\b", text, re.IGNORECASE)
     ):
-        return TaskCommand.DRAFT_MAIL
+        return TaskCommand.SEARCH_MAIL
+
+    # Reply intent
     if (
-        text.startswith(("type exactly ", "type text ", "enter text ", "type in ", "type into "))
-        or (text.startswith("type ") and not re.search(r"\b(?:an?\s+)?(?:email|mail)\b", text))
-        or (text.startswith("write ") and not re.search(r"\b(?:email|mail|note|message|letter)\b", text))
+        text.startswith(("reply to ", "reply email ", "reply to email ", "send a reply to ", "send reply to ", "write a reply", "write reply", "compose a reply", "compose reply", "reply thanking", "reply asking", "reply telling"))
+        or bool(re.search(r"^(?:send\s+a\s+|write\s+a\s+|compose\s+a\s+)?reply\s+(?:to\s+)?([a-zA-Z0-9_\s.'-]+?)(?:\s+(?:saying|that|with|about|thanking|asking|telling)\s+.+)?$", text, re.IGNORECASE))
+        or bool(re.search(r"\breply\s+to\s+(?:the\s+)?(?:latest\s+)?(?:email|mail|message|invitation)\b", text, re.IGNORECASE))
+        or bool(re.search(r"^(?:send\s+a\s+|write\s+a\s+|compose\s+a\s+)?reply\s+(?:saying|that|with|thanking|asking|telling)\b", text, re.IGNORECASE))
+    ):
+        return TaskCommand.REPLY_MAIL
+
+    # Forward intent
+    if (
+        text.startswith(("forward email ", "forward the email ", "forward mail ", "forward that email ", "forward this email ", "forward to "))
+        or bool(re.search(r"\bforward\s+(?:the\s+|that\s+|this\s+)?(?:email|mail|message)?\s*.*?\bto\s+[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text, re.IGNORECASE))
+        or bool(re.search(r"\bforward\s+(?:the\s+|that\s+|this\s+)?(?:email|mail|message)?\s*.*?\bto\s+[a-zA-Z0-9_\s.'-]+", text, re.IGNORECASE))
+    ):
+        return TaskCommand.FORWARD_MAIL
+
+    # ── P7.5.1: Natural-language email creation variants ───────────────────────
+    is_messaging_intent = any(m in text for m in ("whatsapp", "sms", "text message", "message to ", "send a message", "slack", "chat"))
+    is_search_intent = any(s in text for s in ("search email", "find email", "check email", "search mail", "find mail"))
+    clean_text = text.rstrip(".! ")
+
+    if not is_messaging_intent and not is_search_intent:
+        if (
+            clean_text.startswith(("send email ", "send an email ", "send mail ", "send a mail ", "email to "))
+            or bool(re.search(r"^send\s+(?:an?\s+)?update\s+to\s+[a-zA-Z0-9_\s.'-]+", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^send\s+[a-zA-Z0-9_\s.'-]+?\s+an?\s+update(?:\s+(?:regarding|about|on)\s+.+)?$", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^send\s+(?:an?\s+)?(?:email|mail)\s+to\s+[a-zA-Z0-9_\s.'@%+&-]+", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^send\s+[a-zA-Z0-9_\s.'@%+&-]+?\s+(?:an?\s+)?(?:email|mail)\b", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^send\s+(?:it|this)\s+to\s+[a-zA-Z0-9_\s.'@%+&-]+", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^send\s+(?:a\s+|an\s+)?(?:short\s+)?(?:email|mail|message|note)?\s*to\s+[a-zA-Z0-9_\s.'@%+&-]+", clean_text, re.IGNORECASE))
+            or (clean_text.startswith("email ") and not any(k in clean_text for k in ("search", "find", "check", "inbox", "account", "settings", "password", "address", "addresses")))
+            or (clean_text.startswith("send ") and any(w in clean_text for w in ("hello", "hi", "hey", "greeting", "note", "update", "reminder", "draft", "mail", "email")) and not any(m in clean_text for m in ("whatsapp", "sms", "text message", "message to ")))
+        ):
+            return TaskCommand.SEND_MAIL
+
+        if (
+            bool(re.search(r"\b(?:draft|write|compose|prepare|create)\s+(?:an?\s+)?(?:polite\s+|formal\s+|professional\s+|casual\s+|brief\s+|short\s+|quick\s+|respectful\s+)?(?:draft\s+)?(?:email|mail|draft|request|letter|application|permission)\b", text))
+            or bool(re.search(r"\b(?:leave\s+(?:request|application|permission|letter)|leave\s+due\s+to)\b", text))
+            or bool(re.search(r"^write\s+to\s+the\s+person\s+(?:who|that)\s+contacted\s+me", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^write\s+(?:to\s+)?[a-zA-Z0-9_\s.'-]+?\s+(?:about|regarding|concerning|requesting|asking\s+(?:about|for))\s+.+$", clean_text, re.IGNORECASE))
+            or bool(re.search(r"^(?:write|draft|compose|prepare)\s+[a-zA-Z0-9_\s.'@%+&-]+?\s+(?:an?\s+)?(?:email|mail)\b", clean_text, re.IGNORECASE))
+            or text.startswith((
+                "draft email ", "draft an email ", "create draft email ", "create a draft email ",
+                "create a professional draft", "create a formal draft", "create a draft",
+                "write a draft email ", "write draft email ", "draft mail ", "draft a mail ",
+                "prepare an email ", "compose email ", "compose an email ",
+                "write a polite email", "write an email", "write email", "write mail", "write a mail"
+            ))
+            or "draft a formal request" in text
+            or "draft a request" in text
+        ):
+            return TaskCommand.DRAFT_MAIL
+    # ── Code generation & Programming Inquiries ──
+    if (
+        re.search(r"\b(?:write|generate|create|give\s+me|provide|show\s+me|implement)\s+(?:a\s+|an\s+|some\s+)?(?:python|javascript|typescript|bash|shell|sql|html|css|c\+\+|java|rust|go)?\s*(?:code|script|program|function|class|algorithm|snippet|test)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:python|javascript|typescript|bash|sql|c\+\+|java|rust|go)\s+(?:code|script|program|function|class|algorithm|implementation)\b", text, re.IGNORECASE)
+        or text.startswith(("code for ", "script for ", "function for ", "program for "))
+    ):
+        return TaskCommand.ASK_QUESTION
+    if (
+        text.startswith(("type exactly ", "type exactly:", "type text ", "type text:", "enter text ", "type in ", "type into "))
+        or (text.startswith("type ") and not re.search(r"\b(?:an?\s+)?(?:email|mail|code|script|function|program|class|algorithm|snippet)\b", text))
+        or (text.startswith("write ") and not re.search(r"\b(?:email|mail|note|message|letter|code|script|function|program|class|algorithm|snippet|python|javascript|typescript|sql|bash|html|css|java|rust|go)\b", text))
     ):
         return TaskCommand.TYPE_TEXT
     if text.startswith(("press ", "hit key ", "use shortcut ")):

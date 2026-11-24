@@ -21,6 +21,7 @@ from backend.core.contracts import (
     canonical_status,
     TERMINAL_STATUSES,
     ConcurrencyError,
+    MailDeliveryStatus,
 )
 
 SENSITIVE_KEY_PATTERNS = {
@@ -72,7 +73,7 @@ class TaskStore:
     - Short, parameterized transactions
     """
 
-    CURRENT_SCHEMA_VERSION = 2
+    CURRENT_SCHEMA_VERSION = 3
 
     def __init__(self, db_path: str = "cortex-memory.sqlite3") -> None:
         self.db_path = Path(db_path)
@@ -87,6 +88,16 @@ class TaskStore:
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _connect(self) -> sqlite3.Connection:
+        """Alias for _get_connection for test compatibility."""
+        return self._get_connection()
+
+    def clear_mail_send_attempts(self) -> None:
+        """Clears all mail send attempts (used by test cleanup)."""
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM mail_send_attempts;")
+            conn.commit()
 
     def _init_connection_and_migrate(self) -> None:
         with self._get_connection() as conn:
@@ -109,6 +120,8 @@ class TaskStore:
                 self._apply_migration_1(conn)
             if current_ver < 2:
                 self._apply_migration_2(conn)
+            if current_ver < 3:
+                self._apply_migration_3(conn)
 
             # Ensure capability-level durable WhatsApp attempts table exists
             conn.execute(
@@ -131,6 +144,30 @@ class TaskStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_whatsapp_attempts_task_id ON whatsapp_send_attempts(task_id);")
+
+            # Ensure durable Mail send attempts table exists
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mail_send_attempts (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    approval_id TEXT,
+                    payload_hash TEXT NOT NULL,
+                    recipient_hash TEXT NOT NULL,
+                    subject_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    provider_message_id TEXT,
+                    verification_details TEXT
+                );
+                """
+            )
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_attempts_payload ON mail_send_attempts(payload_hash);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attempts_task_id ON mail_send_attempts(task_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attempts_status ON mail_send_attempts(status);")
 
     def _apply_migration_1(self, conn: sqlite3.Connection) -> None:
         """Migration 1: Core Relational Task, Approval, Attempt, and Audit tables."""
@@ -285,6 +322,35 @@ class TaskStore:
             conn.execute("INSERT INTO schema_migrations (version) VALUES (2);")
         except Exception as e:
             raise MigrationError(f"Failed to apply migration 2: {e}") from e
+
+    def _apply_migration_3(self, conn: sqlite3.Connection) -> None:
+        """Migration 3: Mail Send Attempts table for persistent duplicate-send protection (Phase P7.2)."""
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mail_send_attempts (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    approval_id TEXT,
+                    payload_hash TEXT NOT NULL,
+                    recipient_hash TEXT NOT NULL,
+                    subject_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    provider_message_id TEXT,
+                    verification_details TEXT
+                );
+                """
+            )
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_attempts_payload ON mail_send_attempts(payload_hash);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attempts_task_id ON mail_send_attempts(task_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attempts_status ON mail_send_attempts(status);")
+            conn.execute("INSERT INTO schema_migrations (version) VALUES (3);")
+        except Exception as e:
+            raise MigrationError(f"Failed to apply migration 3: {e}") from e
 
     def backup(self, destination: Path | None = None) -> Path:
         """Create a point-in-time SQLite backup safely."""
@@ -591,6 +657,297 @@ class TaskStore:
                     "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else {},
                 })
             return results
+
+    # ── Mail Send Attempts (Durable SQLite Idempotency — Phase P7.2) ──────────
+
+    def record_mail_send_attempt(
+        self,
+        task_id: str,
+        payload_hash: str,
+        recipient: str,
+        subject: str,
+        approval_id: str | None = None,
+        status: str = MailDeliveryStatus.NOT_ATTEMPTED.value,
+        verification_details: str | None = None,
+    ) -> str:
+        """
+        Persists a mail send attempt before invocation.
+        Binds to exact approved payload hash, preventing duplicate dispatch across restarts.
+        """
+        import hashlib
+        attempt_id = str(uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rec_hash = hashlib.sha256(recipient.lower().strip().encode("utf-8")).hexdigest()
+        subj_hash = hashlib.sha256(subject.strip().encode("utf-8")).hexdigest()
+
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO mail_send_attempts (
+                    id, task_id, approval_id, payload_hash, recipient_hash, subject_hash,
+                    status, attempt_count, created_at, updated_at, verification_details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(payload_hash) DO UPDATE SET
+                    attempt_count = mail_send_attempts.attempt_count + 1,
+                    updated_at = excluded.updated_at,
+                    task_id = excluded.task_id,
+                    approval_id = COALESCE(excluded.approval_id, mail_send_attempts.approval_id),
+                    verification_details = COALESCE(excluded.verification_details, mail_send_attempts.verification_details);
+                """,
+                (attempt_id, task_id, approval_id, payload_hash, rec_hash, subj_hash, status, now_iso, now_iso, verification_details),
+            )
+        return attempt_id
+
+    def update_mail_send_attempt(
+        self,
+        attempt_id_or_hash: str,
+        status: str,
+        provider_message_id: str | None = None,
+        verification_details: str | None = None,
+        verified_at: str | None = None,
+    ) -> None:
+        """Atomically updates the delivery lifecycle status of a mail send attempt."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE mail_send_attempts
+                SET status = ?,
+                    provider_message_id = COALESCE(?, provider_message_id),
+                    verification_details = COALESCE(?, verification_details),
+                    verified_at = COALESCE(?, verified_at),
+                    updated_at = ?
+                WHERE id = ? OR payload_hash = ?;
+                """,
+                (status, provider_message_id, verification_details, verified_at, now_iso, attempt_id_or_hash, attempt_id_or_hash),
+            )
+
+    def get_mail_send_attempt_by_hash(self, payload_hash: str) -> dict[str, Any] | None:
+        """Retrieves a durable send attempt by its cryptographic payload hash."""
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "SELECT * FROM mail_send_attempts WHERE payload_hash = ?;",
+                (payload_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "taskId": row["task_id"],
+                "approvalId": row["approval_id"],
+                "payloadHash": row["payload_hash"],
+                "recipientHash": row["recipient_hash"],
+                "subjectHash": row["subject_hash"],
+                "status": row["status"],
+                "attemptCount": row["attempt_count"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "verifiedAt": row["verified_at"],
+                "providerMessageId": row["provider_message_id"],
+                "verificationDetails": row["verification_details"],
+            }
+
+    def get_mail_send_attempt(self, attempt_id: str) -> dict[str, Any] | None:
+        """Retrieves a durable send attempt by primary key."""
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "SELECT * FROM mail_send_attempts WHERE id = ?;",
+                (attempt_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "taskId": row["task_id"],
+                "approvalId": row["approval_id"],
+                "payloadHash": row["payload_hash"],
+                "recipientHash": row["recipient_hash"],
+                "subjectHash": row["subject_hash"],
+                "status": row["status"],
+                "attemptCount": row["attempt_count"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "verifiedAt": row["verified_at"],
+                "providerMessageId": row["provider_message_id"],
+                "verificationDetails": row["verification_details"],
+            }
+
+    def list_mail_send_attempts(self, task_id: str | None = None) -> list[dict[str, Any]]:
+        """Lists mail send attempts, optionally filtered by task_id."""
+        with self._get_connection() as conn:
+            if task_id:
+                cur = conn.execute(
+                    "SELECT * FROM mail_send_attempts WHERE task_id = ? ORDER BY created_at ASC;",
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT * FROM mail_send_attempts ORDER BY created_at ASC;",
+                )
+            results = []
+            for row in cur.fetchall():
+                results.append({
+                    "id": row["id"],
+                    "taskId": row["task_id"],
+                    "approvalId": row["approval_id"],
+                    "payloadHash": row["payload_hash"],
+                    "recipientHash": row["recipient_hash"],
+                    "subjectHash": row["subject_hash"],
+                    "status": row["status"],
+                    "attemptCount": row["attempt_count"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                    "verifiedAt": row["verified_at"],
+                    "providerMessageId": row["provider_message_id"],
+                    "verificationDetails": row["verification_details"],
+                })
+            return results
+
+    def check_mail_send_duplicate(self, payload_hash: str) -> tuple[bool, str, dict[str, Any] | None]:
+        """
+        Inspects durable SQLite state to prevent duplicate sends across restarts.
+        Returns: (is_duplicate: bool, reason: str, existing_attempt: dict | None)
+        """
+        attempt = self.get_mail_send_attempt_by_hash(payload_hash)
+        if not attempt:
+            return False, "", None
+
+        status = attempt.get("status")
+        if status == MailDeliveryStatus.SENT_VERIFIED.value:
+            return True, "Duplicate send prevented: this exact email has already been sent and verified in the Sent mailbox.", attempt
+        if status in (MailDeliveryStatus.SEND_ATTEMPTED.value, MailDeliveryStatus.DELIVERY_UNCONFIRMED.value):
+            return True, "Duplicate send prevented: a prior send attempt is in-flight or unconfirmed. Retries without verification are prohibited.", attempt
+        if status == MailDeliveryStatus.BLOCKED.value:
+            return True, "Duplicate send prevented: send attempt was previously blocked by safety policy.", attempt
+
+        return False, "", attempt
+
+    def reserve_mail_send_attempt(
+        self,
+        task_id: str,
+        payload_hash: str,
+        recipient: str,
+        subject: str,
+        approval_id: str | None = None,
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """
+        Atomically inspects and reserves a mail send attempt within a single transaction.
+        Eliminates check-then-act race conditions under concurrent requests.
+        Returns: (reserved: bool, reason: str, attempt: dict | None)
+        """
+        import hashlib
+        rec_hash = hashlib.sha256(recipient.lower().strip().encode("utf-8")).hexdigest()
+        subj_hash = hashlib.sha256(subject.strip().encode("utf-8")).hexdigest()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        attempt_id = str(uuid4())
+
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT * FROM mail_send_attempts WHERE payload_hash = ?;", (payload_hash,))
+            row = cur.fetchone()
+            if row:
+                attempt = {
+                    "id": row["id"],
+                    "taskId": row["task_id"],
+                    "approvalId": row["approval_id"],
+                    "payloadHash": row["payload_hash"],
+                    "recipientHash": row["recipient_hash"],
+                    "subjectHash": row["subject_hash"],
+                    "status": row["status"],
+                    "attemptCount": row["attempt_count"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                    "verifiedAt": row["verified_at"],
+                    "providerMessageId": row["provider_message_id"],
+                    "verificationDetails": row["verification_details"],
+                }
+                status = row["status"]
+                if status == MailDeliveryStatus.SENT_VERIFIED.value:
+                    return False, "Duplicate send prevented: this exact email has already been sent and verified in the Sent mailbox.", attempt
+                if status in (MailDeliveryStatus.SEND_ATTEMPTED.value, MailDeliveryStatus.DELIVERY_UNCONFIRMED.value):
+                    return False, "Duplicate send prevented: a prior send attempt is in-flight or unconfirmed. Retries without verification are prohibited.", attempt
+                if status == MailDeliveryStatus.BLOCKED.value:
+                    return False, "Duplicate send prevented: send attempt was previously blocked by safety policy.", attempt
+                if status == MailDeliveryStatus.NOT_ATTEMPTED.value:
+                    conn.execute(
+                        "UPDATE mail_send_attempts SET status = ?, attempt_count = attempt_count + 1, updated_at = ?, task_id = ?, approval_id = COALESCE(?, approval_id) WHERE id = ?;",
+                        (MailDeliveryStatus.SEND_ATTEMPTED.value, now_iso, task_id, approval_id, row["id"]),
+                    )
+                    attempt["status"] = MailDeliveryStatus.SEND_ATTEMPTED.value
+                    attempt["attemptCount"] += 1
+                    attempt["updatedAt"] = now_iso
+                    return True, "Send attempt successfully reserved.", attempt
+                return False, f"Send attempt in state '{status}' cannot be reserved.", attempt
+
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO mail_send_attempts (
+                        id, task_id, approval_id, payload_hash, recipient_hash, subject_hash,
+                        status, attempt_count, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?);
+                    """,
+                    (attempt_id, task_id, approval_id, payload_hash, rec_hash, subj_hash, MailDeliveryStatus.SEND_ATTEMPTED.value, now_iso, now_iso),
+                )
+                new_attempt = {
+                    "id": attempt_id,
+                    "taskId": task_id,
+                    "approvalId": approval_id,
+                    "payloadHash": payload_hash,
+                    "recipientHash": rec_hash,
+                    "subjectHash": subj_hash,
+                    "status": MailDeliveryStatus.SEND_ATTEMPTED.value,
+                    "attemptCount": 1,
+                    "createdAt": now_iso,
+                    "updatedAt": now_iso,
+                    "verifiedAt": None,
+                    "providerMessageId": None,
+                    "verificationDetails": None,
+                }
+                return True, "Send attempt successfully reserved.", new_attempt
+            except Exception:
+                return self.reserve_mail_send_attempt(task_id, payload_hash, recipient, subject, approval_id)
+
+    def reauthorize_mail_send_attempt(
+        self,
+        payload_hash: str,
+        reason: str,
+        authorized_by: str = "user",
+    ) -> tuple[bool, str]:
+        """
+        Reauthorizes a previously BLOCKED send attempt, transitioning it back to NOT_ATTEMPTED
+        with an auditable event record.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        task_id = None
+        attempt_id = None
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT * FROM mail_send_attempts WHERE payload_hash = ?;", (payload_hash,))
+            row = cur.fetchone()
+            if not row:
+                return False, "No send attempt found matching payload hash."
+            if row["status"] != MailDeliveryStatus.BLOCKED.value:
+                return False, f"Attempt is in status '{row['status']}', not BLOCKED. Only BLOCKED attempts can be reauthorized."
+
+            task_id = row["task_id"]
+            attempt_id = row["id"]
+            conn.execute(
+                "UPDATE mail_send_attempts SET status = ?, updated_at = ? WHERE id = ?;",
+                (MailDeliveryStatus.NOT_ATTEMPTED.value, now_iso, attempt_id),
+            )
+
+        self.record_audit_event(
+            "mail_send_reauthorized",
+            task_id=task_id,
+            metadata={
+                "payload_hash": payload_hash,
+                "reason": reason,
+                "authorized_by": authorized_by,
+                "attempt_id": attempt_id,
+            },
+        )
+        return True, f"Send attempt successfully reauthorized: {reason}"
 
     # ── Approvals (Cryptographic 15-minute binding) ────────────────────────────
 

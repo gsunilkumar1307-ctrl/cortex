@@ -100,6 +100,7 @@ class UserAuthorizedContactStore(WhatsAppContactSource):
 
             if not loaded_from_mem and not self._contacts:
                 seed = [
+                    {"id": "c_manu", "name": "Manu", "phone": "+91 99999 88888", "role": "friend"},
                     {"id": "c_rahul", "name": "Rahul", "phone": "+91 98765 43210", "role": "colleague"},
                     {"id": "c_rahul_sharma", "name": "Rahul Sharma", "phone": "+91 98765 43210", "role": "colleague"},
                     {"id": "c_rahul_kn", "name": "ರಾಹುಲ್", "phone": "+91 98765 43210", "role": "colleague"},
@@ -321,6 +322,100 @@ class RecipientResolver:
         """Main entry point to resolve a recipient query."""
         raw_query = query.strip()
         combined_text = f"{raw_query} {full_message}".lower()
+
+        # ── 0. Self-Identity Detection (myself, me, my email, etc.) ───────────
+        clean_q = re.sub(
+            r"^(?:(?:send|draft|write|mail|email)\s+(?:an?\s+)?(?:email|mail|it|this)?\s*(?:to\s+)?|to\s+)",
+            "",
+            raw_query or full_message,
+            flags=re.IGNORECASE,
+        ).strip().lower().rstrip(".!")
+        clean_q_base = re.sub(r"\s+to\s+(?:apply|request|ask|tell|remind|schedule|confirm|submit)\b.*$", "", clean_q, flags=re.IGNORECASE).strip()
+        clean_q_base = re.sub(r"\s+(?:about|regarding|concerning|saying|for)\b.*$", "", clean_q_base, flags=re.IGNORECASE).strip()
+
+        self_patterns = (
+            "myself", "me", "my email", "my own email", "my own email address", "self", "myself's email",
+            "my own gmail", "my own account", "my gmail", "sunil kumar", "sunil"
+        )
+        is_self = (
+            clean_q in self_patterns
+            or clean_q_base in self_patterns
+            or raw_query.lower() in self_patterns
+            or any(clean_q.startswith(p + " ") for p in self_patterns)
+        )
+        if is_self:
+            accounts = []
+            if self.mail_automation and hasattr(self.mail_automation, "get_accounts"):
+                try:
+                    accounts = self.mail_automation.get_accounts()
+                except Exception:
+                    accounts = []
+
+            # Filter valid accounts with non-empty emails
+            valid_accs = [a for a in accounts if a.get("email") and "@" in a.get("email", "")]
+            # De-duplicate by email
+            unique_accs = []
+            seen_emails = set()
+            for a in valid_accs:
+                em = a["email"].lower().strip()
+                if em not in seen_emails:
+                    seen_emails.add(em)
+                    unique_accs.append(a)
+
+            if len(unique_accs) == 1:
+                target_acc = unique_accs[0]
+                acc_name = target_acc.get("name", "").strip()
+                if not acc_name or acc_name.lower() in ("google", "gmail", "apple", "apple mail", "icloud", "exchange", "outlook", "yahoo"):
+                    resolved_name = "Sunil Kumar"
+                else:
+                    resolved_name = acc_name
+                rec = ResolvedRecipient(
+                    name=resolved_name,
+                    email=target_acc["email"].lower().strip(),
+                    role="self",
+                    confidence=1.0,
+                    source="connected_account",
+                    context_notes="User's own connected email account",
+                )
+                return ResolutionResult(
+                    status="resolved",
+                    recipient=rec,
+                    candidates=[rec],
+                    query=raw_query,
+                )
+            elif len(unique_accs) > 1:
+                candidates = [
+                    ResolvedRecipient(
+                        name=(
+                            a.get("name")
+                            if a.get("name") and a["name"].lower() not in ("google", "gmail", "apple", "apple mail", "icloud", "exchange", "outlook", "yahoo")
+                            else "Sunil Kumar"
+                        ),
+                        email=a["email"].lower().strip(),
+                        role="self",
+                        confidence=0.9,
+                        source="connected_account",
+                        context_notes=f"Connected account: {a.get('name') or a['email']}",
+                    )
+                    for a in unique_accs
+                ]
+                acc_options = "\n".join([f"• {c.name} ({c.email})" for c in candidates])
+                prompt = (
+                    f"You have multiple connected email accounts:\n{acc_options}\n\n"
+                    f"Which email address would you like to send this to?"
+                )
+                return ResolutionResult(
+                    status="multiple_candidates",
+                    candidates=candidates,
+                    clarification_prompt=prompt,
+                    query=raw_query,
+                )
+            else:
+                return ResolutionResult(
+                    status="source_unavailable",
+                    clarification_prompt="No connected email accounts found. Please connect an email account or enter your email address to send an email to yourself.",
+                    query=raw_query,
+                )
 
         # ── 1. Direct Email Address Detection ──────────────────────────────────
         direct_emails = re.findall(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", raw_query)

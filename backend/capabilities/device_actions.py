@@ -18,6 +18,16 @@ try:
 except ImportError:
     from core.contracts import TaskCommand
 
+try:
+    from backend.capabilities.safety import is_real_email_send_allowed
+except ImportError:
+    try:
+        from capabilities.safety import is_real_email_send_allowed
+    except ImportError:
+        def is_real_email_send_allowed() -> bool:
+            return os.getenv("CORTEX_ALLOW_REAL_EMAIL_SEND", "").strip() == "1"
+
+
 
 def _is_safe_path(path_str: str) -> tuple[bool, Path]:
     try:
@@ -298,6 +308,8 @@ class DeviceAutomation:
         self._mail = None      # lazy-loaded MailAutomation
         self._whatsapp = None  # lazy-loaded WhatsAppAutomation
         self._discovery = None # lazy-loaded ApplicationDiscovery
+        self._notes_adapter = None # lazy-loaded NotesAdapter
+        self._whatsapp_adapter = None # lazy-loaded WhatsAppAdapter
 
     @property
     def dry_run(self) -> bool:
@@ -306,6 +318,10 @@ class DeviceAutomation:
     @dry_run.setter
     def dry_run(self, val: bool) -> None:
         self._dry_run = val
+        if self._notes_adapter is not None:
+            self._notes_adapter.dry_run = val
+        if self._whatsapp_adapter is not None:
+            self._whatsapp_adapter.dry_run = val
         if self._mail is not None:
             self._mail.dry_run = val
             if hasattr(self._mail, "_manager") and self._mail._manager is not None:
@@ -322,7 +338,9 @@ class DeviceAutomation:
     def _get_mail(self):
         if self._mail is None:
             from .mail_actions import MailAutomation
-            self._mail = MailAutomation(dry_run=self.dry_run)
+            self._mail = MailAutomation(dry_run=self.dry_run, mcp_manager=getattr(self, "mcp_manager", None))
+        elif getattr(self._mail, "mcp_manager", None) is None and getattr(self, "mcp_manager", None) is not None:
+            self._mail.mcp_manager = self.mcp_manager
         return self._mail
 
     def _get_whatsapp(self):
@@ -350,6 +368,48 @@ class DeviceAutomation:
     @whatsapp.setter
     def whatsapp(self, val):
         self._whatsapp = val
+
+    def _get_notes_adapter(self):
+        if self._notes_adapter is None:
+            try:
+                from backend.adapters.notes_adapter import NotesAdapter
+            except ImportError:
+                from adapters.notes_adapter import NotesAdapter
+            self._notes_adapter = NotesAdapter(dry_run=self.dry_run)
+            self._notes_adapter._simulated_store = self._note_store
+        return self._notes_adapter
+
+    @property
+    def notes_adapter(self):
+        return self._get_notes_adapter()
+
+    @notes_adapter.setter
+    def notes_adapter(self, val):
+        self._notes_adapter = val
+
+    def _get_whatsapp_adapter(self):
+        if self._whatsapp_adapter is None:
+            try:
+                from backend.adapters.whatsapp_adapter import WhatsAppAdapter
+            except ImportError:
+                from adapters.whatsapp_adapter import WhatsAppAdapter
+            t_store = getattr(self, "task_store", None)
+            self._whatsapp_adapter = WhatsAppAdapter(dry_run=self.dry_run, task_store=t_store)
+            if self._whatsapp is not None and hasattr(self._whatsapp, "adapter"):
+                self._whatsapp_adapter.desktop_adapter = self._whatsapp.adapter
+        elif getattr(self._whatsapp_adapter, "task_store", None) is None and getattr(self, "task_store", None) is not None:
+            self._whatsapp_adapter.task_store = getattr(self, "task_store", None)
+        if self._whatsapp is not None and getattr(self._whatsapp_adapter, "whatsapp_automation", None) is None:
+            self._whatsapp_adapter.whatsapp_automation = self._whatsapp
+        return self._whatsapp_adapter
+
+    @property
+    def whatsapp_adapter(self):
+        return self._get_whatsapp_adapter()
+
+    @whatsapp_adapter.setter
+    def whatsapp_adapter(self, val):
+        self._whatsapp_adapter = val
 
     @property
     def screen_bridge(self):
@@ -451,7 +511,7 @@ class DeviceAutomation:
         # ── Phase 5: Mail Automation ──────────────────────────
         if command in (TaskCommand.READ_MAIL, TaskCommand.SUMMARIZE_MAIL):
             return self._read_mail(limit=int(params.get("limit", 5)), unread_only=bool(params.get("unread_only", False)))
-        if command == TaskCommand.DRAFT_MAIL:
+        if command in (TaskCommand.DRAFT_MAIL, TaskCommand.REPLY_MAIL, TaskCommand.FORWARD_MAIL):
             return self.create_email_draft(
                 str(params.get("recipient", "")),
                 str(params.get("subject", "")),
@@ -460,6 +520,8 @@ class DeviceAutomation:
                 attachments=params.get("attachments"),
                 cc=params.get("cc"),
                 bcc=params.get("bcc"),
+                in_reply_to=str(params.get("in_reply_to", "")),
+                references=params.get("references"),
             )
         if command == TaskCommand.SEND_MAIL:
             return self._send_mail(
@@ -472,7 +534,20 @@ class DeviceAutomation:
                 bcc=params.get("bcc"),
             )
         if command == TaskCommand.SEARCH_MAIL:
-            res = self._get_mail().search_mail(str(params.get("query", "")))
+            mail = self._get_mail()
+            res = mail.search_mail(
+                query=str(params.get("query", "")),
+                sender=str(params.get("sender", "")),
+                recipient=str(params.get("recipient", "")),
+                subject=str(params.get("subject", "")),
+                date_from=params.get("date_from"),
+                date_to=params.get("date_to"),
+                unread_only=bool(params.get("unread_only", False)),
+                account=str(params.get("account", "")),
+                mailbox=str(params.get("mailbox", "")),
+                limit=int(params.get("limit", 25) if str(params.get("limit", "")).isdigit() else 25),
+                mcp_manager=getattr(self, "mcp_manager", getattr(mail, "mcp_manager", None)),
+            )
             return DeviceActionResult(res.get("ok", False), res.get("message", ""), res)
         if command == TaskCommand.EMAIL_BRIEFING:
             res = self._get_mail().email_briefing(int(params.get("limit", 10)))
@@ -482,6 +557,8 @@ class DeviceAutomation:
             return DeviceActionResult(res.get("ok", False), res.get("message", ""), res)
 
         # ── Phase 7: Files & Personal Assistant ───────────────
+        if command == TaskCommand.CREATE_DIRECTORY:
+            return self._create_directory(str(params.get("path") or params.get("directory") or params.get("name") or ""))
         if command == TaskCommand.WRITE_FILE:
             return self._write_file(str(params.get("path", "")), str(params.get("content", "")))
         if command == TaskCommand.READ_FILE:
@@ -529,6 +606,7 @@ class DeviceAutomation:
             return self._open_app(
                 str(params.get("appName") or params.get("app_name") or params.get("target") or ""),
                 folder=str(params.get("folder") or ""),
+                file_path=str(params.get("file_path") or params.get("path") or ""),
             )
         if command == TaskCommand.CLOSE_APP:
             return self._close_app(str(params.get("appName") or params.get("app_name") or params.get("target") or ""))
@@ -540,6 +618,8 @@ class DeviceAutomation:
             return self._close_app(str(params.get("appName") or params.get("app_name") or params.get("target") or ""), force=bool(params.get("force", False)))
         if command == TaskCommand.INSPECT_APP:
             return self._inspect_app(str(params.get("appName") or params.get("target") or ""))
+        if command == TaskCommand.TYPE_TEXT:
+            return self._type_text(str(params.get("text") or ""), str(params.get("appName") or ""))
         if (command in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP)) and (params.get("channel") == "whatsapp" or params.get("phone")):
             return self._send_whatsapp(
                 str(params.get("recipient", "")),
@@ -552,8 +632,6 @@ class DeviceAutomation:
 
         if self.dry_run:
             return DeviceActionResult(True, f"Dry-run completed for {command.value}.", {"params": params})
-        if command == TaskCommand.TYPE_TEXT:
-            return self._type_text(str(params.get("text") or ""), str(params.get("appName") or ""))
         if command == TaskCommand.KEYSTROKE:
             return self._keystroke(str(params.get("shortcut") or params.get("key") or ""), str(params.get("appName") or ""))
         if command == TaskCommand.MENU_ITEM:
@@ -598,6 +676,18 @@ class DeviceAutomation:
             return DeviceActionResult(False, "No URL provided.")
         if self.dry_run:
             return DeviceActionResult(True, f"Opened {url} in browser.", {"url": url})
+        
+        # 1. MCP Agent Browser delegation (SYS-03 repair: no leak to native/legacy)
+        mcp_mgr = getattr(self, "mcp_manager", None)
+        if mcp_mgr and mcp_mgr.is_running("agent-browser"):
+            try:
+                res = mcp_mgr.call_tool("agent-browser", "agent_browser_open", {"url": url})
+                if res and res.is_error:
+                    return DeviceActionResult(False, f"Agent Browser failed: {res.error_message or 'Unknown error'}")
+                return DeviceActionResult(True, f"Opened {url} in Agent Browser.", {"url": url, "mcp_server": "agent-browser"})
+            except Exception as e:
+                logger.warning(f"Failed to open {url} via agent-browser MCP: {e}")
+
         if self.system == "darwin":
             try:
                 subprocess.run(["open", "-a", "Safari", url], check=False)
@@ -610,18 +700,45 @@ class DeviceAutomation:
     def _browser_click(self, selector: str, url: str = "") -> DeviceActionResult:
         if not selector:
             return DeviceActionResult(False, "No selector provided for browser click.")
+        mcp_mgr = getattr(self, "mcp_manager", None)
+        if mcp_mgr and mcp_mgr.is_running("agent-browser"):
+            try:
+                res = mcp_mgr.call_tool("agent-browser", "agent_browser_click", {"selector": selector})
+                if res and res.is_error:
+                    return DeviceActionResult(False, f"Agent Browser click failed: {res.error_message or 'Unknown error'}")
+                return DeviceActionResult(True, f"Clicked '{selector}' in Agent Browser.", {"selector": selector})
+            except Exception as e:
+                logger.warning(f"Failed to click via agent-browser MCP: {e}")
         result = self._get_browser().click(selector, url)
         return DeviceActionResult(result.ok, result.message, result.data)
 
     def _browser_type(self, selector: str, text: str, url: str = "") -> DeviceActionResult:
         if not selector or not text:
             return DeviceActionResult(False, "Selector and text are required for browser type.")
+        mcp_mgr = getattr(self, "mcp_manager", None)
+        if mcp_mgr and mcp_mgr.is_running("agent-browser"):
+            try:
+                res = mcp_mgr.call_tool("agent-browser", "agent_browser_fill", {"selector": selector, "text": text})
+                if res and res.is_error:
+                    return DeviceActionResult(False, f"Agent Browser type failed: {res.error_message or 'Unknown error'}")
+                return DeviceActionResult(True, f"Typed into '{selector}' in Agent Browser.", {"selector": selector, "text": text})
+            except Exception as e:
+                logger.warning(f"Failed to type via agent-browser MCP: {e}")
         result = self._get_browser().type_text(selector, text, url)
         return DeviceActionResult(result.ok, result.message, result.data)
 
     def _browser_scrape(self, url: str, selector: str = "body") -> DeviceActionResult:
         if not url:
             return DeviceActionResult(False, "No URL provided for scrape.")
+        mcp_mgr = getattr(self, "mcp_manager", None)
+        if mcp_mgr and mcp_mgr.is_running("agent-browser"):
+            try:
+                res = mcp_mgr.call_tool("agent-browser", "agent_browser_snapshot", {})
+                if res and res.is_error:
+                    return DeviceActionResult(False, f"Agent Browser scrape failed: {res.error_message or 'Unknown error'}")
+                return DeviceActionResult(True, f"Captured snapshot via Agent Browser.", {"content": res.content or res.raw_payload})
+            except Exception as e:
+                logger.warning(f"Failed to scrape via agent-browser MCP: {e}")
         result = self._get_browser().scrape(url, selector)
         return DeviceActionResult(result.ok, result.message, result.data)
 
@@ -650,6 +767,8 @@ class DeviceAutomation:
         attachments: list[str] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        in_reply_to: str = "",
+        references: list[str] | None = None,
     ) -> DeviceActionResult:
         """Explicit email drafting capability strictly decoupled from keystroke typing."""
         return self._draft_mail(
@@ -660,6 +779,8 @@ class DeviceAutomation:
             attachments=attachments,
             cc=cc,
             bcc=bcc,
+            in_reply_to=in_reply_to,
+            references=references,
         )
 
     def update_email_draft(
@@ -700,6 +821,8 @@ class DeviceAutomation:
         attachments: list[str] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        in_reply_to: str = "",
+        references: list[str] | None = None,
     ) -> DeviceActionResult:
         mail_inst = self._get_mail()
         import inspect
@@ -711,6 +834,8 @@ class DeviceAutomation:
             if has_varkw or "attachments" in sig.parameters: kwargs["attachments"] = attachments
             if has_varkw or "cc" in sig.parameters: kwargs["cc"] = cc
             if has_varkw or "bcc" in sig.parameters: kwargs["bcc"] = bcc
+            if has_varkw or "in_reply_to" in sig.parameters: kwargs["in_reply_to"] = in_reply_to
+            if has_varkw or "references" in sig.parameters: kwargs["references"] = references
             result = mail_inst.draft_mail(recipient, subject, body, **kwargs)
         except (ValueError, TypeError):
             result = mail_inst.draft_mail(recipient, subject, body)
@@ -726,6 +851,12 @@ class DeviceAutomation:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
     ) -> DeviceActionResult:
+        if not is_real_email_send_allowed():
+            return DeviceActionResult(
+                False,
+                f"Email sending to {recipient} is blocked by safety policy. Real email transmission is disabled in Phase P7.2.",
+                {"recipient": recipient, "subject": subject, "account": account, "error": "SEND_BLOCKED_BY_POLICY"},
+            )
         mail_inst = self._get_mail()
         import inspect
         try:
@@ -852,7 +983,90 @@ class DeviceAutomation:
                 return False
         return False
 
-    def _open_app(self, app_name: str, folder: str = "") -> DeviceActionResult:
+    def _open_app(self, app_name: str, folder: str = "", file_path: str = "") -> DeviceActionResult:
+        # Fallback: if app_name is an existing file path and file_path was not set, treat as file_path
+        if not file_path and app_name:
+            try:
+                p_cand = Path(app_name).expanduser()
+                if p_cand.exists() and p_cand.is_file():
+                    file_path = str(p_cand)
+                    app_name = ""
+            except Exception:
+                pass
+
+        # 1. Opening a file with default or specified application
+        if file_path:
+            p_resolved = Path(file_path).expanduser().resolve()
+            if not p_resolved.exists():
+                return DeviceActionResult(False, f"Cannot open file: '{p_resolved.name}' was not found.")
+
+            # Default application opening via macOS Launch Services (open <file>)
+            if not app_name or app_name.lower() in ("default", "system default", "default application", "none", ""):
+                if self.dry_run:
+                    return DeviceActionResult(
+                        True,
+                        f"Opened {p_resolved.name} in its default application.",
+                        {"appName": "Default Application", "file_path": str(p_resolved), "wasRunning": True, "isActive": True},
+                    )
+                if self.system == "darwin":
+                    try:
+                        res = subprocess.run(["open", str(p_resolved)], capture_output=True, text=True, check=False)
+                        if res.returncode == 0:
+                            return DeviceActionResult(
+                                True,
+                                f"Opened {p_resolved.name} in its default application.",
+                                {"appName": "Default Application", "file_path": str(p_resolved), "wasRunning": True, "isActive": True},
+                            )
+                        return DeviceActionResult(False, f"Cannot open {p_resolved.name}: {res.stderr.strip()}")
+                    except Exception as e:
+                        return DeviceActionResult(False, f"Failed to open {p_resolved.name}: {e}")
+
+            # Explicit application requested (e.g. Preview, TextEdit)
+            resolution = self.discovery.resolve(app_name, running_apps=self.screen_bridge.list_running_apps())
+            if not self.dry_run and resolution.get("status") == "not_installed":
+                return DeviceActionResult(
+                    False,
+                    f"Cannot open '{p_resolved.name}': Application '{app_name}' is not installed on this Mac.",
+                    {"appName": app_name, "isInstalled": False, "file_path": str(p_resolved)},
+                )
+
+            canonical = resolution.get("app_name") or self.resolve_app_name(app_name) or app_name
+            if self.dry_run:
+                return DeviceActionResult(
+                    True,
+                    f"Opened {p_resolved.name} in {canonical}.",
+                    {"appName": canonical, "file_path": str(p_resolved), "wasRunning": True, "isActive": True},
+                )
+            if self.system == "darwin":
+                try:
+                    res = subprocess.run(["open", "-a", canonical, str(p_resolved)], capture_output=True, text=True, check=False)
+                    if res.returncode == 0:
+                        return DeviceActionResult(
+                            True,
+                            f"Opened {p_resolved.name} in {canonical}.",
+                            {"appName": canonical, "file_path": str(p_resolved), "wasRunning": True, "isActive": True},
+                        )
+                    return DeviceActionResult(False, f"Cannot open {p_resolved.name} in {canonical}: {res.stderr.strip()}")
+                except Exception as e:
+                    return DeviceActionResult(False, f"Failed to open {p_resolved.name} in {canonical}: {e}")
+
+        # 2. Opening a folder in Finder
+        if folder:
+            p_folder = Path(folder).expanduser().resolve()
+            if not p_folder.exists():
+                return DeviceActionResult(False, f"Cannot open folder: '{p_folder}' does not exist.")
+            if self.dry_run:
+                return DeviceActionResult(True, f"Opened folder {p_folder.name} in Finder.", {"appName": "Finder", "folder": str(p_folder)})
+            if self.system == "darwin":
+                try:
+                    res = subprocess.run(["open", str(p_folder)], capture_output=True, text=True, check=False)
+                    if res.returncode == 0:
+                        return DeviceActionResult(True, f"Opened folder '{p_folder.name}' in Finder.", {"appName": "Finder", "folder": str(p_folder)})
+                    return DeviceActionResult(False, f"Cannot open folder: {res.stderr.strip()}")
+                except Exception as e:
+                    return DeviceActionResult(False, f"Failed to open folder: {e}")
+
+        # 3. Standard application launch
         if not app_name:
             return DeviceActionResult(False, "No app name was provided.")
 
@@ -864,12 +1078,11 @@ class DeviceAutomation:
                 {"isAmbiguous": True, "candidates": resolution.get("candidates", []), "appName": app_name},
             )
         if not self.dry_run and resolution.get("status") == "not_installed":
-            if not folder:
-                return DeviceActionResult(
-                    False,
-                    f"Cannot open '{app_name}': Application is not installed on this Mac.",
-                    {"appName": app_name, "isInstalled": False},
-                )
+            return DeviceActionResult(
+                False,
+                f"Cannot open '{app_name}': Application is not installed on this Mac.",
+                {"appName": app_name, "isInstalled": False},
+            )
 
         canonical = resolution.get("app_name") or self.resolve_app_name(app_name)
         bundle_id = resolution.get("bundle_id")
@@ -1007,13 +1220,9 @@ class DeviceAutomation:
         if self.dry_run:
             return DeviceActionResult(True, f"Focused {canonical}.", {"appName": canonical, "isActive": True})
 
-        # Check if app is running before attempting to bring it to foreground
+        # If app is not running, launch it so focusing opens the application
         if not self.is_app_running(canonical):
-            return DeviceActionResult(
-                False,
-                f"Cannot bring {canonical} to front: Application is not currently running.",
-                {"appName": canonical, "isRunning": False, "isActive": False},
-            )
+            return self._open_app(canonical)
 
         if self.system == "darwin":
             try:
@@ -1434,6 +1643,12 @@ class DeviceAutomation:
                 step_res = self._click_element(target, params=step_data)
             elif action == "type":
                 step_res = self._type_in_element(target, text or "", params=step_data)
+            elif action in ("open_url", "navigate"):
+                target_url = step_data.get("url") or target
+                step_res = self._browser_open_url(target_url)
+            elif action in ("snapshot", "scrape"):
+                target_url = step_data.get("url") or target
+                step_res = self._browser_scrape(target_url, selector=step_data.get("selector", "body"))
             else:
                 step_res = DeviceActionResult(False, f"Unsupported workflow step action: {action}")
 
@@ -1506,21 +1721,156 @@ class DeviceAutomation:
         return DeviceActionResult(res["ok"], res.get("message") or res.get("error", "WhatsApp sending failed."), res.get("data"))
 
     def _type_text(self, text: str, app_name: str = "") -> DeviceActionResult:
-        if not text:
+        clean_text = re.sub(
+            r"^(?:exactly\s*[:=]?|text\s*[:=]?)\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not clean_text:
             return DeviceActionResult(False, "No text was provided.")
-        if app_name:
-            focus = self._focus_app(app_name)
-            if not focus.ok:
-                return focus
+
+        canonical = self.resolve_app_name(app_name) if app_name else ""
+
+        if self.dry_run:
+            return DeviceActionResult(
+                True,
+                "Typed text.",
+                {"text": clean_text, "appName": canonical, "verified": True, "already_present": False},
+            )
+
         if self.system == "darwin":
-            subprocess.run(["osascript", "-e", f'tell application "System Events" to keystroke {self._apple_string(text)}'], check=True)
+            if canonical == "Notes":
+                return self._type_text_macos_notes(clean_text)
+            elif canonical:
+                return self._type_text_macos_generic(clean_text, canonical)
+            else:
+                return self._type_text_macos_generic(clean_text)
         elif self.system == "windows":
-            escaped = text.replace("'", "''")
+            if canonical:
+                focus = self._focus_app(canonical)
+                if not focus.ok:
+                    return focus
+            escaped = clean_text.replace("'", "''")
             script = f"$ws=New-Object -ComObject WScript.Shell; $ws.SendKeys('{escaped}')"
             subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True)
+            return DeviceActionResult(True, "Typed text.", {"text": clean_text, "appName": canonical, "verified": True})
         else:
             return DeviceActionResult(False, "Type text is not implemented for this OS.")
-        return DeviceActionResult(True, "Typed text.", {"text": text, "appName": app_name})
+
+    def _type_text_macos_notes(self, text: str) -> DeviceActionResult:
+        # Step 1: Ensure Notes is running
+        if not self.is_app_running("Notes"):
+            open_res = self._open_app("Notes")
+            if not open_res.ok:
+                return DeviceActionResult(False, f"Failed to launch Notes: {open_res.message}", {"text": text, "appName": "Notes", "verified": False})
+            time.sleep(0.5)
+
+        # Step 2: Ensure Notes is activated and focused
+        focus_res = self._focus_app("Notes")
+        if not focus_res.ok:
+            return DeviceActionResult(False, f"Failed to focus Notes: {focus_res.message}", {"text": text, "appName": "Notes", "verified": False})
+
+        # Step 3: Delegate to NotesAdapter
+        adapter = self.notes_adapter
+        res = adapter._execute_type_text(text, time.time())
+        return DeviceActionResult(
+            ok=res.success,
+            message=res.message,
+            data=res.data,
+        )
+
+    def _type_text_macos_generic(self, text: str, app_name: str = "") -> DeviceActionResult:
+        canonical = self.resolve_app_name(app_name) if app_name else ""
+        if canonical:
+            if not self.is_app_running(canonical):
+                open_res = self._open_app(canonical)
+                if not open_res.ok:
+                    return open_res
+                time.sleep(0.5)
+            focus_res = self._focus_app(canonical)
+            if not focus_res.ok:
+                return focus_res
+
+        escaped_text = self._apple_string(text)
+        script = f"""
+        tell application "System Events"
+            set frontProc to first process whose frontmost is true
+            set focElem to missing value
+            try
+                set focElem to (first UI element of frontProc whose focused is true)
+            end try
+            set beforeVal to ""
+            try
+                if focElem is not missing value then
+                    set beforeVal to (value of focElem as string)
+                end if
+            end try
+
+            if beforeVal contains {escaped_text} then
+                return "ALREADY_PRESENT"
+            end if
+
+            keystroke {escaped_text}
+            delay 0.2
+
+            set afterVal to ""
+            try
+                if focElem is not missing value then
+                    set afterVal to (value of focElem as string)
+                end if
+            end try
+
+            if afterVal contains {escaped_text} then
+                return "VERIFIED"
+            else
+                if focElem is missing value or afterVal is "" then
+                    return "UNVERIFIED_ACCESSIBILITY_UNAVAILABLE"
+                else
+                    return "UNVERIFIED"
+                end if
+            end if
+        end tell
+        """
+        try:
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=8.0)
+            output = (res.stdout or "").strip()
+            if output == "VERIFIED":
+                return DeviceActionResult(
+                    True,
+                    f"Typed text into {canonical or 'active application'} and verified.",
+                    {"text": text, "appName": canonical, "verified": True, "already_present": False},
+                )
+            elif output == "ALREADY_PRESENT":
+                return DeviceActionResult(
+                    True,
+                    f"Text already present in {canonical or 'active application'}. Duplicate typing prevented.",
+                    {"text": text, "appName": canonical, "verified": True, "already_present": True},
+                )
+            elif output == "UNVERIFIED_ACCESSIBILITY_UNAVAILABLE":
+                return DeviceActionResult(
+                    True,
+                    f"Typed text into {canonical or 'active application'}, but target element does not expose accessibility value for verification.",
+                    {"text": text, "appName": canonical, "verified": False, "unverified": True},
+                )
+            elif output == "UNVERIFIED":
+                return DeviceActionResult(
+                    False,
+                    f"Typed text into {canonical or 'active application'}, but text was not verified in target field.",
+                    {"text": text, "appName": canonical, "verified": False, "unverified": True},
+                )
+            else:
+                return DeviceActionResult(
+                    True,
+                    f"Dispatched keystroke to {canonical or 'active application'}.",
+                    {"text": text, "appName": canonical, "verified": False, "unverified": True},
+                )
+        except Exception as e:
+            return DeviceActionResult(
+                False,
+                f"Keystroke dispatch failed: {e}",
+                {"text": text, "appName": canonical, "verified": False},
+            )
 
     def _keystroke(self, shortcut: str, app_name: str = "") -> DeviceActionResult:
         if not shortcut:
@@ -1557,204 +1907,61 @@ class DeviceAutomation:
         return DeviceActionResult(True, f"Chose {item} from {menu} in {app_name}.")
 
     def _write_note(self, title: str, body: str) -> DeviceActionResult:
-        if not body:
-            return DeviceActionResult(False, "No note text was provided.")
-        # Strip leading meta phrasing from body
-        body = re.sub(
-            r"^(?:the\s+following\s+content\s*[:=]?|the\s+content\s*[:=]?|content\s*[:=]?|body\s*[:=]?|text\s*[:=]?)\s*",
-            "",
-            body,
-            flags=re.IGNORECASE,
-        ).strip()
-        self._note_store[title] = {"title": title, "body": body}
-
-        if self.system == "darwin" and not self.dry_run:
-            # Check if note already exists to prevent duplicate note creation
-            script = f"""
-            tell application "Notes"
-                activate
-                set targetNote to missing value
-                repeat with n in notes
-                    if (name of n) is {self._apple_string(title)} then
-                        set targetNote to n
-                        exit repeat
-                    end if
-                end repeat
-                if targetNote is not missing value then
-                    set body of targetNote to {self._apple_string(body)}
-                    return "UPDATED<|SEP|>" & (name of targetNote)
-                else
-                    set newN to make new note at folder "Notes" with properties {{name:{self._apple_string(title)}, body:{self._apple_string(body)}}}
-                    return "CREATED<|SEP|>" & (name of newN)
-                end if
-            end tell
-            """
-            try:
-                out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True).stdout.strip()
-                action_type = "Updated" if out.startswith("UPDATED") else "Created"
-                return DeviceActionResult(True, f"{action_type} note: '{title}'.", {"title": title, "body": body, "verified": True})
-            except subprocess.CalledProcessError as e:
-                err = e.stderr.strip() if e.stderr else str(e)
-                return DeviceActionResult(False, f"Failed to write note: {err}")
-            except Exception as e:
-                return DeviceActionResult(False, f"Failed to write note: {e}")
-
-        if self.dry_run:
-            return DeviceActionResult(True, f"Created note: '{title}'.", {"title": title, "body": body, "verified": True})
-
-        if self.system == "windows":
-            note_path = Path.home() / "Documents" / "Cortex Notes.txt"
-            note_path.parent.mkdir(parents=True, exist_ok=True)
-            note_path.write_text(f"{title}\n{body}\n", encoding="utf-8")
-            subprocess.run(["notepad", str(note_path)], check=True)
-            return DeviceActionResult(True, f"Created note at {note_path}.", {"path": str(note_path)})
-        return DeviceActionResult(False, "Writing notes is not implemented for this OS.")
+        adapter = self.notes_adapter
+        res = adapter.execute_action("create_note", {"title": title, "body": body})
+        if res.success:
+            self._note_store[title] = {"title": title, "body": body}
+            return DeviceActionResult(True, res.message, res.data)
+        return DeviceActionResult(False, res.message, res.data)
 
     def update_note_title(self, old_title: str, new_title: str) -> DeviceActionResult:
         """Modifies the title of an existing note in Apple Notes."""
-        if not new_title:
-            return DeviceActionResult(False, "New note title is required.")
-        if old_title in self._note_store:
-            data = self._note_store.pop(old_title)
-            data["title"] = new_title
-            self._note_store[new_title] = data
-        else:
-            self._note_store[new_title] = {"title": new_title, "body": ""}
-
-        if self.system == "darwin" and not self.dry_run:
-            script = f"""
-            tell application "Notes"
-                set targetNote to missing value
-                repeat with n in notes
-                    if (name of n) is {self._apple_string(old_title)} or (name of n) contains {self._apple_string(old_title)} then
-                        set targetNote to n
-                        exit repeat
-                    end if
-                end repeat
-                if targetNote is not missing value then
-                    try
-                        set name of targetNote to {self._apple_string(new_title)}
-                    end try
-                    try
-                        set curP to plaintext of targetNote
-                        set pLines to paragraphs of curP
-                        if (count of pLines) > 1 then
-                            set remainingText to (text from paragraph 2 to -1 of curP)
-                            set body of targetNote to ("<h1>" & {self._apple_string(new_title)} & "</h1><br><div>" & remainingText & "</div>")
-                        else
-                            set body of targetNote to ("<h1>" & {self._apple_string(new_title)} & "</h1>")
-                        end if
-                    end try
-                    return "RENAMED<|SEP|>" & (name of targetNote)
-                else
-                    return "NOT_FOUND"
-                end if
-            end tell
-            """
-            try:
-                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
-                if res.startswith("RENAMED"):
-                    return DeviceActionResult(True, f"Updated note title to '{new_title}'.", {"old_title": old_title, "new_title": new_title, "verified": True})
-            except Exception:
-                pass
-        return DeviceActionResult(True, f"Updated note title to '{new_title}'.", {"old_title": old_title, "new_title": new_title, "verified": True})
+        adapter = self.notes_adapter
+        res = adapter.execute_action("update_title", {"old_title": old_title, "new_title": new_title})
+        if res.success:
+            if old_title in self._note_store:
+                data = self._note_store.pop(old_title)
+                data["title"] = new_title
+                self._note_store[new_title] = data
+            else:
+                self._note_store[new_title] = {"title": new_title, "body": ""}
+            return DeviceActionResult(True, res.message, res.data)
+        return DeviceActionResult(False, res.message, res.data)
 
     def append_note(self, title: str, addition: str) -> DeviceActionResult:
         """Appends new points or content to an existing note without creating duplicates."""
-        if not addition:
-            return DeviceActionResult(False, "Content addition is required.")
-        if title in self._note_store:
-            self._note_store[title]["body"] += f"\n{addition}"
-        else:
-            self._note_store[title] = {"title": title, "body": addition}
-
-        if self.system == "darwin" and not self.dry_run:
-            script = f"""
-            tell application "Notes"
-                set targetNote to missing value
-                repeat with n in notes
-                    if (name of n) is {self._apple_string(title)} or (name of n) contains {self._apple_string(title)} then
-                        set targetNote to n
-                        exit repeat
-                    end if
-                end repeat
-                if targetNote is not missing value then
-                    set curBody to body of targetNote
-                    set body of targetNote to (curBody & "<br><br>" & {self._apple_string(addition)})
-                    return "APPENDED<|SEP|>" & (name of targetNote)
-                else
-                    return "NOT_FOUND"
-                end if
-            end tell
-            """
-            try:
-                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
-                if res.startswith("APPENDED"):
-                    return DeviceActionResult(True, f"Added point to note '{title}'.", {"title": title, "addition": addition, "verified": True})
-            except Exception:
-                pass
-        return DeviceActionResult(True, f"Added point to note '{title}'.", {"title": title, "addition": addition, "verified": True})
+        adapter = self.notes_adapter
+        res = adapter.execute_action("append_note", {"title": title, "addition": addition})
+        if res.success:
+            if title in self._note_store:
+                self._note_store[title]["body"] += f"\n{addition}"
+            else:
+                self._note_store[title] = {"title": title, "body": addition}
+            return DeviceActionResult(True, res.message, res.data)
+        return DeviceActionResult(False, res.message, res.data)
 
     def open_note(self, title: str) -> DeviceActionResult:
         """Opens and focuses an existing note in Apple Notes."""
-        if self.system == "darwin" and not self.dry_run:
-            script = f"""
-            tell application "Notes"
-                activate
-                set targetNote to missing value
-                repeat with n in notes
-                    if (name of n) is {self._apple_string(title)} or (name of n) contains {self._apple_string(title)} then
-                        set targetNote to n
-                        exit repeat
-                    end if
-                end repeat
-                if targetNote is not missing value then
-                    show targetNote
-                    return "OPENED<|SEP|>" & (name of targetNote)
-                else
-                    return "NOT_FOUND"
-                end if
-            end tell
-            """
-            try:
-                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
-                if res.startswith("OPENED"):
-                    return DeviceActionResult(True, f"Opened note '{title}' in Apple Notes.", {"title": title, "verified": True})
-            except Exception:
-                pass
-        return DeviceActionResult(True, f"Opened note '{title}' in Apple Notes.", {"title": title, "verified": True})
+        adapter = self.notes_adapter
+        res = adapter.execute_action("open_note", {"title": title})
+        return DeviceActionResult(res.success, res.message, res.data)
 
     def verify_note(self, title: str, expected_content: str = "") -> dict[str, Any]:
         """Queries Apple Notes to verify that the note exists with expected title and body."""
-        if self.system == "darwin" and not self.dry_run:
-            script = f"""
-            tell application "Notes"
-                repeat with n in notes
-                    if (name of n) is {self._apple_string(title)} or (name of n) contains {self._apple_string(title)} then
-                        return "VERIFIED<|SEP|>" & (name of n) & "<|SEP|>" & (plaintext of n)
-                    end if
-                end repeat
-                return "NOT_FOUND"
-            end tell
-            """
-            try:
-                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
-                if res.startswith("VERIFIED"):
-                    parts = res.split("<|SEP|>")
-                    name = parts[1] if len(parts) > 1 else title
-                    content = parts[2] if len(parts) > 2 else ""
-                    verified = bool(not expected_content or expected_content.lower() in content.lower())
-                    return {"verified": verified, "title": name, "body": content, "evidence": f"Note '{name}' confirmed in Apple Notes"}
-            except Exception:
-                pass
-
-        if title in self._note_store:
-            data = self._note_store[title]
-            content = data.get("body", "")
-            verified = bool(not expected_content or expected_content.lower() in content.lower())
-            return {"verified": verified, "title": title, "body": content, "evidence": f"Note '{title}' confirmed in local store"}
-
-        return {"verified": False, "title": title, "body": "", "evidence": f"Note '{title}' not found"}
+        adapter = self.notes_adapter
+        obs = adapter.observe({"title": title, "text": expected_content})
+        note_exists = obs.state_data.get("note_exists", False)
+        note_content = obs.state_data.get("note_content", "")
+        if not note_exists and title in self._note_store:
+            note_exists = True
+            note_content = self._note_store[title].get("body", "")
+        verified = bool(note_exists and (not expected_content or expected_content.lower() in note_content.lower()))
+        return {
+            "verified": verified,
+            "title": obs.state_data.get("note_title", title),
+            "body": note_content,
+            "evidence": f"Note '{title}' confirmed in Apple Notes" if verified else f"Note '{title}' not found",
+        }
 
     def _send_message(self, recipient: str, body: str, channel: str = "messages", phone: str = "", approved_hash: str | None = None) -> DeviceActionResult:
         if not recipient or not body:
@@ -1937,10 +2144,24 @@ class DeviceAutomation:
         base.mkdir(parents=True, exist_ok=True)
         return base / "personal_tasks.json"
 
-    def _write_file(self, path_str: str, content: str) -> DeviceActionResult:
+    def _create_directory(self, path_str: str) -> DeviceActionResult:
         safe, p = _is_safe_path(path_str)
         if not safe:
             return DeviceActionResult(False, f"Blocked unsafe path traversal: {path_str}")
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            return DeviceActionResult(True, f"Created directory '{p.name}'", {"path": str(p), "directory": str(p), "name": p.name})
+        except Exception as e:
+            return DeviceActionResult(False, f"Failed to create directory: {e}")
+
+    def _write_file(self, path_str: str, content: str) -> DeviceActionResult:
+        if not path_str or str(path_str).strip() in ("", "."):
+            path_str = str(Path.home() / "Desktop" / "notes.txt")
+        safe, p = _is_safe_path(path_str)
+        if not safe:
+            return DeviceActionResult(False, f"Blocked unsafe path traversal: {path_str}")
+        if p.is_dir():
+            p = p / "notes.txt"
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")

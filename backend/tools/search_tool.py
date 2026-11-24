@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sys
 import time
+import urllib.parse
+import subprocess
 from typing import Any
 try:
     from backend.core.contracts import (
@@ -45,14 +48,27 @@ class WebSearchTool(BaseTool):
         start_time = time.time()
         query = inputs.get("query", "")
         step_id = inputs.get("step_id", "search-step")
-        results = search_web(query, max_results=int(inputs.get("max_results", 5)))
+        max_results = int(inputs.get("max_results", 5))
+
+        requested_browser = str(inputs.get("browser", "")).lower()
+        is_safari = requested_browser == "safari"
+        safari_opened = False
+        if is_safari and sys.platform == "darwin":
+            try:
+                search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+                subprocess.run(["open", "-a", "Safari", search_url], check=False)
+                safari_opened = True
+            except Exception:
+                pass
+
+        results = search_web(query, max_results=max_results)
         duration_ms = (time.time() - start_time) * 1000
 
         return ExecutionResult(
             step_id=step_id,
             ok=bool(results),
             message=f"Found {len(results)} results." if results else "No results found.",
-            data={"results": results},
+            data={"results": results, "query": query, "safari_opened": safari_opened},
             duration_ms=duration_ms,
         )
 

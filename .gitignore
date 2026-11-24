@@ -7,7 +7,10 @@ node_modules/
 dist/
 build/
 *.sqlite3
+*.sqlite3*
 *.db
+*.db-shm
+*.db-wal
 work/
 .env
 .env.*
@@ -18,5 +21,11 @@ logs/
 *.key
 .memory_key
 .session_secret
+.playwright-mcp/
+.backup_submission/
+apps/desktop/src.phase0_baseline/
+*.png
+!docs/screenshots/*.png
+!apps/desktop/public/*.png
 backend/native/cortex_screen_helper
 !backend/native/cortex_screen_helper.swift

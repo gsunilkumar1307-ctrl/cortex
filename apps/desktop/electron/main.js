@@ -75,8 +75,19 @@ function createMainWindow() {
     if (url.startsWith("http://127.0.0.1:5173") || url.startsWith("http://localhost:5173")) {
       return { action: "allow" };
     }
-    shell.openExternal(url);
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      shell.openExternal(url);
+    }
     return { action: "deny" };
+  });
+
+  mainWin.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("http://127.0.0.1:5173") && !url.startsWith("http://localhost:5173")) {
+      event.preventDefault();
+      if (url.startsWith("https://") || url.startsWith("http://")) {
+        shell.openExternal(url);
+      }
+    }
   });
 
   mainWin.loadURL(process.env.CORTEX_DESKTOP_URL || "http://127.0.0.1:5173");
@@ -211,6 +222,15 @@ ipcMain.on("set-window-mode", (event, mode) => {
 
 ipcMain.handle("get-window-mode", () => {
   return isFloatingMode ? "floating" : "standard";
+});
+
+// Secure external browser navigation
+ipcMain.handle("open-external", async (_, url) => {
+  if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
+    await shell.openExternal(url);
+    return true;
+  }
+  return false;
 });
 
 // HUD IPC bridge

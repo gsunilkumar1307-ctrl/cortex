@@ -78,6 +78,7 @@ class PolicyEngine:
             PolicyRule(TaskCommand.ASK_QUESTION, RiskLevel.LOW, False, False, "General question answering"),
             PolicyRule(TaskCommand.CALCULATE, RiskLevel.LOW, False, False, "Local math calculation"),
             PolicyRule(TaskCommand.WEB_SEARCH, RiskLevel.LOW, False, False, "Public web search"),
+            PolicyRule(TaskCommand.FETCH_WEB_CONTENT, RiskLevel.LOW, False, False, "Retrieve public webpage content via MCP Fetch"),
             PolicyRule(TaskCommand.OPEN_APP, RiskLevel.LOW, False, False, "Launch installed desktop application"),
             PolicyRule(TaskCommand.CLOSE_APP, RiskLevel.LOW, False, False, "Close running application"),
             PolicyRule(TaskCommand.FOCUS_APP, RiskLevel.LOW, False, False, "Switch active application window"),
@@ -87,6 +88,8 @@ class PolicyEngine:
             PolicyRule(TaskCommand.READ_MAIL, RiskLevel.LOW, False, False, "Read recent messages from inbox"),
             PolicyRule(TaskCommand.SUMMARIZE_MAIL, RiskLevel.LOW, False, False, "Summarize email messages"),
             PolicyRule(TaskCommand.DRAFT_MAIL, RiskLevel.LOW, False, False, "Create draft email (does not send)"),
+            PolicyRule(TaskCommand.REPLY_MAIL, RiskLevel.LOW, False, False, "Create reply draft email (does not send)"),
+            PolicyRule(TaskCommand.FORWARD_MAIL, RiskLevel.LOW, False, False, "Create forward draft email (does not send)"),
             PolicyRule(TaskCommand.SEARCH_MAIL, RiskLevel.LOW, False, False, "Search email messages"),
             PolicyRule(TaskCommand.EMAIL_BRIEFING, RiskLevel.LOW, False, False, "Generate email briefing"),
             PolicyRule(TaskCommand.EXTRACT_ACTIONS, RiskLevel.LOW, False, False, "Extract action items from email"),
@@ -183,11 +186,14 @@ class PolicyEngine:
         cmd_enum = self._to_command_enum(command)
         cmd_val = cmd_enum.value if cmd_enum != TaskCommand.UNKNOWN else str(command)
         normalized = f"{cmd_val}:"
-        if cmd_enum in (TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL) or "mail" in cmd_val or "email" in cmd_val:
+        if cmd_enum in (TaskCommand.SEND_MAIL, TaskCommand.DRAFT_MAIL, TaskCommand.REPLY_MAIL, TaskCommand.FORWARD_MAIL) or "mail" in cmd_val or "email" in cmd_val:
             rec = str(params.get("recipient", "")).lower().strip()
             subj = str(params.get("subject", "")).strip()
             body = str(params.get("body", "")).strip()
-            normalized += f"{rec}:{subj}:{body}"
+            cc = sorted(str(c).lower().strip() for c in (params.get("cc", []) or []) if str(c).strip())
+            bcc = sorted(str(b).lower().strip() for b in (params.get("bcc", []) or []) if str(b).strip())
+            att = sorted(str(a).strip() for a in (params.get("attachments", []) or []) if str(a).strip())
+            normalized += f"{rec}:{subj}:{body}:{cc}:{bcc}:{att}"
         elif cmd_enum in (TaskCommand.SEND_MESSAGE, TaskCommand.SEND_WHATSAPP, TaskCommand.DRAFT_WHATSAPP) or "message" in cmd_val or "whatsapp" in cmd_val:
             rec = str(params.get("recipient", "")).lower().strip()
             phone = str(params.get("phone", "")).strip()

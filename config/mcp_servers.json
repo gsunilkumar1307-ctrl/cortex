@@ -1,0 +1,81 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2.3.0",
+        "~/Desktop",
+        "~/Documents",
+        "~/Downloads",
+        "~/Documents/CortexWorkspace"
+      ],
+      "default_risk_level": "medium",
+      "timeout_seconds": 30.0,
+      "enabled": true
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "default_risk_level": "low",
+      "timeout_seconds": 30.0,
+      "enabled": true
+    },
+    "agent-browser": {
+      "command": "agent-browser",
+      "args": [
+        "mcp"
+      ],
+      "default_risk_level": "medium",
+      "timeout_seconds": 60.0,
+      "enabled": true
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.85",
+        "--isolated"
+      ],
+      "default_risk_level": "medium",
+      "timeout_seconds": 60.0,
+      "enabled": false
+    },
+    "apple-mail": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "apple-mail-mcp@2.20.57"
+      ],
+      "allowed_tools": [
+        "health-check",
+        "doctor",
+        "get-sync-status",
+        "get-mail-stats",
+        "list-mailboxes",
+        "list-accounts",
+        "get-unread-count",
+        "search-messages",
+        "list-messages",
+        "get-message",
+        "get-message-headers",
+        "get-thread",
+        "list-attachments",
+        "get-attachment-metadata",
+        "create-draft",
+        "update-saved-draft"
+      ],
+      "blocked_tools": [
+        "send-email",
+        "send-serial-email",
+        "reply-to-message",
+        "forward-message"
+      ],
+      "default_risk_level": "medium",
+      "timeout_seconds": 30.0,
+      "enabled": true
+    }
+  }
+}

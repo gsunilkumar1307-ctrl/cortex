@@ -16,11 +16,12 @@ if not Path(bin_path).exists():
 if bin_path not in os.environ.get("PATH", ""):
     os.environ["PATH"] = f"{bin_path}:{os.environ.get('PATH', '')}"
 
+import json
 import wave
 import urllib.request
 import urllib.parse
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -71,7 +72,7 @@ async def session_auth_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
     path = request.url.path
-    if path not in {"/", "/health", "/ping", "/docs", "/openapi.json", "/redoc"}:
+    if path not in {"/", "/health", "/ping", "/docs", "/openapi.json", "/redoc", "/api/llm/status"}:
         if os.getenv("CORTEX_DISABLE_AUTH", "0") != "1":
             token = request.headers.get("X-Cortex-Session")
             if not token:
@@ -112,7 +113,16 @@ async def get_index():
 
 @app.get("/health")
 async def get_health():
-    return {"ok": True, "service": "cortex-cloud-brain"}
+    llm_status = orchestrator.get_llm_status()
+    return {
+        "ok": True,
+        "service": "cortex-cloud-brain",
+        "llm": llm_status,
+    }
+
+@app.get("/api/llm/status")
+async def get_llm_status():
+    return orchestrator.get_llm_status()
 
 @app.get("/memory")
 async def get_memory():
@@ -187,11 +197,57 @@ async def post_chat(req: ChatRequest):
     message = req.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
+
+    llm_status = orchestrator.get_llm_status()
+    if not llm_status.get("ready"):
+        status_label = llm_status.get("status") or "Local AI Unavailable"
+        err_msg = llm_status.get("error") or status_label
+        raise HTTPException(
+            status_code=503,
+            detail=f"Local AI not ready ({status_label}): {err_msg}",
+        )
+
     try:
         cleaned = strip_wake_word(message)
         return orchestrator.chat(cleaned, req.source, preferred_language=req.preferred_language)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def post_chat_stream(req: ChatRequest):
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    llm_status = orchestrator.get_llm_status()
+    if not llm_status.get("ready"):
+        status_label = llm_status.get("status") or "Local AI Unavailable"
+        err_msg = llm_status.get("error") or status_label
+
+        def unavailable_generator():
+            err_event = {
+                "token": f"Local AI not ready ({status_label}): {err_msg}",
+                "done": True,
+                "message": f"Local AI not ready ({status_label}): {err_msg}",
+                "task": None,
+                "error": err_msg,
+            }
+            yield f"data: {json.dumps(err_event)}\n\n"
+
+        return StreamingResponse(unavailable_generator(), media_type="text/event-stream")
+
+    cleaned = strip_wake_word(message)
+
+    def event_generator():
+        try:
+            for event in orchestrator.chat_stream(cleaned, req.source, preferred_language=req.preferred_language):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            err_event = {"token": "", "done": True, "message": f"Error: {e}", "task": None}
+            yield f"data: {json.dumps(err_event)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 def is_audio_silent(wav_bytes: bytes, threshold: int = 350) -> bool:
     """Checks whether the WAV audio has sufficient energy to contain human speech."""
@@ -213,7 +269,7 @@ def transcribe_audio_multilingual(audio_bytes: bytes, preferred_lang: Optional[s
     using Gemini multimodal STT first, with fallback to Google Speech Recognition.
     """
     gemini_model = None
-    if orchestrator.use_gemini and orchestrator.api_key:
+    if getattr(orchestrator, "use_llm", getattr(orchestrator, "use_gemini", False)):
         try:
             gemini_model = orchestrator._create_gemini_model()
         except Exception:

@@ -50,16 +50,15 @@ def _capture_screenshot() -> bytes:
             pass
 
 
-def analyze_screen(api_key: str, question: str = "What is on my screen right now?") -> dict[str, Any]:
+def analyze_screen(api_key: str = "", question: str = "What is on my screen right now?") -> dict[str, Any]:
     """
-    Takes a screenshot and asks Gemini Vision to describe it.
+    Takes a screenshot and asks local Ollama Vision to describe it.
     Returns dict with 'ok', 'description', and 'raw_bytes_len'.
     """
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
+        from backend.agent.ollama_client import OllamaModel
     except ImportError:
-        return {"ok": False, "description": "google-generativeai package not installed.", "raw_bytes_len": 0}
+        from agent.ollama_client import OllamaModel
 
     try:
         png_bytes = _capture_screenshot()
@@ -69,8 +68,7 @@ def analyze_screen(api_key: str, question: str = "What is on my screen right now
         return {"ok": False, "description": f"Could not capture screen: {e}", "raw_bytes_len": 0}
 
     try:
-        vision_model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-        model = genai.GenerativeModel(vision_model_name)
+        model = OllamaModel()
         response = model.generate_content([
             question,
             {"mime_type": "image/png", "data": base64.b64encode(png_bytes).decode()}

@@ -340,7 +340,7 @@ def translate_text(
                     return preserver.unmask(translated)
                 return translated
         except Exception as e:
-            print(f"[translator] Gemini translation error: {e}", file=sys.stderr)
+            print(f"[translator] LLM translation error: {e}", file=sys.stderr)
 
     # Deterministic offline translation
     translated = _offline_translate(masked_text, target_lang)

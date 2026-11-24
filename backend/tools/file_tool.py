@@ -78,9 +78,7 @@ class FileTool(BaseTool):
             )
 
         elif action == "search_files":
-            pattern = str(inputs.get("pattern", "*"))
-            directory = str(inputs.get("directory", "."))
-            res = self.automation.execute(TaskCommand.SEARCH_FILES, {"pattern": pattern, "directory": directory})
+            res = self.automation.execute(TaskCommand.SEARCH_FILES, inputs)
             return ExecutionResult(
                 step_id=inputs.get("step_id", "search-files-step"),
                 ok=res.ok,
@@ -116,7 +114,7 @@ class FileTool(BaseTool):
                 state["exists"] = False
 
         if action == "search_files":
-            state["found_count"] = len(execution_result.data.get("files", []))
+            state["found_count"] = len(execution_result.data.get("files", []) or execution_result.data.get("names", []))
 
         return Observation(
             target=f"file:{path_str or inputs.get('directory', '.')}",

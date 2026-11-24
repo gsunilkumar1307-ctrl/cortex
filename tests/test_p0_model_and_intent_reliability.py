@@ -24,10 +24,10 @@ class TestP0ModelAndIntentReliability(unittest.TestCase):
         self.orch.clear_history()
 
     def test_model_initialization_defaults_consistent(self):
-        """Authoritative model configuration defaults to gemini-3.5-flash across all modules."""
-        self.assertEqual(self.orch.model_name, "gemini-3.5-flash")
+        """Authoritative model configuration defaults to qwen3.5:9b across all modules."""
+        self.assertEqual(self.orch.model_name, "qwen3.5:9b")
         screen_vision = MultimodalVisualIntelligenceEngine()
-        self.assertEqual(screen_vision.model_name, "gemini-3.5-flash")
+        self.assertEqual(screen_vision.model_name, "qwen3.5:9b")
 
     def test_greeting_routing(self):
         """Greetings route to ASK_QUESTION and return conversational status."""

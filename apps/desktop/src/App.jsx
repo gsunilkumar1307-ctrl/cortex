@@ -6,7 +6,8 @@ import {
   Zap, RefreshCw, ChevronRight, Eye, Compass,
   Volume2, VolumeX, Mail, Languages, FileEdit,
   Inbox, AtSign, Clock, AlertTriangle, Radio, Sparkles,
-  Sun, Moon, Trash2, Copy, Shield, Sliders, History, Play, Pin
+  Sun, Moon, Trash2, Copy, Shield, Sliders, History, Play, Pin,
+  CheckCircle2, Paperclip, Save
 } from "lucide-react";
 import "./styles.css";
 
@@ -64,9 +65,31 @@ function FormattedMessage({ content }) {
     } catch {}
   }
 
+  // Security validation: only allow safe web link protocols (reject javascript:, file:, data:)
+  const isSafeUrl = (raw) => {
+    if (!raw || typeof raw !== "string") return false;
+    try {
+      const parsed = new URL(raw.trim());
+      return parsed.protocol === "https:" || parsed.protocol === "http:";
+    } catch {
+      return false;
+    }
+  };
+
+  const handleOpenLink = (e, url) => {
+    e.preventDefault();
+    if (!isSafeUrl(url)) return;
+    if (typeof window !== "undefined" && window.cortexAPI && typeof window.cortexAPI.openExternal === "function") {
+      window.cortexAPI.openExternal(url);
+    } else if (typeof window !== "undefined" && window.open) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
   const renderInline = (str, keyPrefix = "") => {
     const parts = [];
-    const regex = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    // Tokenizer matching markdown links [label](url), bold **text**, code `code`, and bare URLs
+    const regex = /(\[([^\]]+)\]\((https?:\/\/[^\s\)\"\'<>]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|(https?:\/\/[^\s\)\"\'<>,]+))/g;
     let lastIdx = 0;
     let match;
 
@@ -74,11 +97,62 @@ function FormattedMessage({ content }) {
       if (match.index > lastIdx) {
         parts.push(str.substring(lastIdx, match.index));
       }
-      const token = match[0];
-      if (token.startsWith("**") && token.endsWith("**")) {
-        parts.push(<strong key={`${keyPrefix}-${match.index}`} className="ai-bold">{token.slice(2, -2)}</strong>);
-      } else if (token.startsWith("`") && token.endsWith("`")) {
-        parts.push(<code key={`${keyPrefix}-${match.index}`} className="ai-code">{token.slice(1, -1)}</code>);
+
+      if (match[2] && match[3]) {
+        // Markdown hyperlink [label](url)
+        const label = match[2];
+        const rawUrl = match[3];
+        if (isSafeUrl(rawUrl)) {
+          parts.push(
+            <a
+              key={`${keyPrefix}-link-${match.index}`}
+              href={rawUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ai-link"
+              onClick={(e) => handleOpenLink(e, rawUrl)}
+              title={rawUrl}
+            >
+              {label}
+            </a>
+          );
+        } else {
+          parts.push(label);
+        }
+      } else if (match[4]) {
+        // Bold **text**
+        parts.push(
+          <strong key={`${keyPrefix}-bold-${match.index}`} className="ai-bold">
+            {match[4]}
+          </strong>
+        );
+      } else if (match[5]) {
+        // Inline code `code`
+        parts.push(
+          <code key={`${keyPrefix}-code-${match.index}`} className="ai-code">
+            {match[5]}
+          </code>
+        );
+      } else if (match[6]) {
+        // Bare URL
+        const rawUrl = match[6];
+        if (isSafeUrl(rawUrl)) {
+          parts.push(
+            <a
+              key={`${keyPrefix}-bare-${match.index}`}
+              href={rawUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ai-link"
+              onClick={(e) => handleOpenLink(e, rawUrl)}
+              title={rawUrl}
+            >
+              {rawUrl}
+            </a>
+          );
+        } else {
+          parts.push(rawUrl);
+        }
       }
       lastIdx = regex.lastIndex;
     }
@@ -88,14 +162,59 @@ function FormattedMessage({ content }) {
     return parts;
   };
 
+  const renderTable = (rows, tableKey) => {
+    if (!rows || rows.length === 0) return null;
+    const headerRow = rows[0];
+    const headerCells = headerRow.split("|").slice(1, -1).map((c) => c.trim());
+    const bodyRows = rows.slice(1).filter((r) => !/^[|\s\-:]+$/.test(r.trim()));
+
+    return (
+      <div key={tableKey} className="ai-table-container">
+        <table className="ai-table">
+          <thead>
+            <tr>
+              {headerCells.map((h, hIdx) => (
+                <th key={`th-${hIdx}`}>{renderInline(h, `${tableKey}-th-${hIdx}`)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bodyRows.map((r, rIdx) => {
+              const cells = r.split("|").slice(1, -1).map((c) => c.trim());
+              return (
+                <tr key={`tr-${rIdx}`}>
+                  {cells.map((c, cIdx) => (
+                    <td key={`td-${rIdx}-${cIdx}`}>{renderInline(c, `${tableKey}-td-${rIdx}-${cIdx}`)}</td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   const lines = cleanContent.split("\n");
   const elements = [];
   let inCode = false;
   let codeBuffer = [];
   let codeLang = "";
+  let tableRows = [];
+
+  const flushTable = (currentIdx) => {
+    if (tableRows.length > 0) {
+      elements.push(renderTable(tableRows, `table-${currentIdx}`));
+      tableRows = [];
+    }
+  };
 
   lines.forEach((line, idx) => {
-    if (line.trim().startsWith("```")) {
+    const trimmed = line.trim();
+
+    // Check code blocks
+    if (trimmed.startsWith("```")) {
+      flushTable(idx);
       if (inCode) {
         elements.push(
           <div key={`code-${idx}`} className="code-block-container">
@@ -112,7 +231,7 @@ function FormattedMessage({ content }) {
         codeLang = "";
       } else {
         inCode = true;
-        codeLang = line.trim().slice(3).trim();
+        codeLang = trimmed.slice(3).trim();
       }
       return;
     }
@@ -122,7 +241,14 @@ function FormattedMessage({ content }) {
       return;
     }
 
-    const trimmed = line.trim();
+    // Check markdown table lines
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      tableRows.push(trimmed);
+      return;
+    } else {
+      flushTable(idx);
+    }
+
     if (trimmed.startsWith("# ")) {
       elements.push(<h2 key={idx} className="ai-heading-1">{renderInline(trimmed.substring(2), `h1-${idx}`)}</h2>);
     } else if (trimmed.startsWith("## ")) {
@@ -151,17 +277,165 @@ function FormattedMessage({ content }) {
     }
   });
 
+  flushTable(lines.length);
+
   return <div className="ai-formatted-text">{elements}</div>;
+}
+
+// ─── Unified Email Field Resolvers ──────────────────────────────────────────
+function resolveComposerRecipient(task) {
+  const p = task?.params || {};
+  const draft = p.draft || task?.draft || (task?.context && task?.context?.draft) || {};
+  return (
+    task?.recipient_email ||
+    task?.recipient ||
+    p.recipient_email ||
+    p.recipient ||
+    draft.recipient ||
+    (task?.context && task?.context?.recipient) ||
+    ""
+  );
+}
+
+function resolveComposerSubject(task) {
+  const p = task?.params || {};
+  const draft = p.draft || task?.draft || (task?.context && task?.context?.draft) || {};
+  return (
+    task?.subject ||
+    p.subject ||
+    draft.subject ||
+    (task?.context && task?.context?.purpose) ||
+    ""
+  );
+}
+
+function resolveComposerBody(task) {
+  const p = task?.params || {};
+  const draft = p.draft || task?.draft || (task?.context && task?.context?.draft) || {};
+  return (
+    task?.formatted_body ||
+    task?.body ||
+    p.formatted_body ||
+    p.body ||
+    draft.body ||
+    ""
+  );
+}
+
+function resolveComposerSender(task) {
+  const p = task?.params || {};
+  const draft = p.draft || task?.draft || (task?.context && task?.context?.draft) || {};
+  return (
+    task?.sender_account ||
+    task?.account ||
+    p.sender_account ||
+    p.account ||
+    draft.sender_account ||
+    ""
+  );
 }
 
 // ─── Response Card (Contextual summaries & outputs) ───────────────────────────
 function ResponseCard({ task, message }) {
+  const isDraftNotice = message && (
+    message.includes("Draft created and saved to your mailbox") ||
+    message.includes("Draft prepared (Note: draft could not be saved") ||
+    message.includes("Draft updated via structured editor")
+  );
+
   if (!task || !message) {
+    if (isDraftNotice) {
+      return (
+        <div className="email-draft-bubble-notice">
+          <div className="email-notice-header">
+            <Mail size={15} />
+            <span>Email Draft Ready for Review</span>
+          </div>
+          <p className="email-notice-text">
+            I have prepared an email draft. Please review, edit, or approve sending in the composer below.
+          </p>
+        </div>
+      );
+    }
     return <div className="ai-response-card">{message ? <FormattedMessage content={message} /> : "…"}</div>;
   }
 
   const cmd = task.command;
   const lang = task.language || "en";
+  const isEmailAction = ["send_mail", "draft_mail", "reply_mail", "forward_mail"].includes(cmd) || isDraftNotice;
+
+  // Email Draft Awaiting Approval — Clean Bubble Notice (Eliminates Duplicate Body)
+  if (isEmailAction && (task.status === "waiting_approval" || task.status === "awaiting_approval")) {
+    const isEditTurn = (task.stateVersion && task.stateVersion > 1) || (task.state_version && task.state_version > 1);
+    if (isEditTurn || !isDraftNotice) {
+      return (
+        <div className="ai-response-card">
+          {message ? <FormattedMessage content={message} /> : "Draft updated."}
+        </div>
+      );
+    }
+    const recipient = resolveComposerRecipient(task);
+    const subject = resolveComposerSubject(task);
+    return (
+      <div className="email-draft-bubble-notice">
+        <div className="email-notice-header">
+          <Mail size={15} />
+          <span>Email Draft Ready for Review</span>
+          <LanguageBadge lang={lang} />
+        </div>
+        <p className="email-notice-text">
+          I have prepared an email draft{recipient ? <> for <strong>{recipient}</strong></> : ""}{subject ? <> regarding <em>"{subject}"</em></> : ""}.
+          Please review the details in the composer card below. You can edit directly, request changes, or click <strong>Approve & Send</strong>.
+        </p>
+      </div>
+    );
+  }
+
+  // Email Send Completed Card
+  if (cmd === "send_mail" && task.status === "completed") {
+    const p = task.params || {};
+    return (
+      <div className="result-card mail-card mail-sent-card">
+        <div className="result-card-header">
+          <div className="result-card-icon mail-icon" style={{ background: "rgba(34, 197, 94, 0.15)", color: "var(--good)" }}>
+            <Check size={15} />
+          </div>
+          <span style={{ fontWeight: 600 }}>Email Dispatched</span>
+          <LanguageBadge lang={lang} />
+          <span className="task-status-badge badge-completed" style={{ marginLeft: "auto", fontSize: "11px", color: "var(--good)" }}>
+            ✓ Sent
+          </span>
+        </div>
+        <div className="draft-fields">
+          <div className="draft-field">
+            <span className="draft-label">To</span>
+            <span className="draft-value">{p.recipient || p.recipient_email}</span>
+          </div>
+          {p.subject && (
+            <div className="draft-field">
+              <span className="draft-label">Subject</span>
+              <span className="draft-value">{p.subject}</span>
+            </div>
+          )}
+        </div>
+        <div style={{ marginTop: "8px", fontSize: "11.5px", color: "var(--good)" }}>
+          ✓ Safely dispatched via Apple Mail.
+        </div>
+      </div>
+    );
+  }
+
+  // Email Cancelled Notice
+  if (isEmailAction && (task.status === "canceled" || task.status === "cancelled")) {
+    const p = task.params || {};
+    return (
+      <div className="email-draft-bubble-notice cancelled">
+        <div className="email-notice-text" style={{ color: "var(--text-muted)" }}>
+          ✕ Email draft to <strong>{p.recipient || p.recipient_email || "the recipient"}</strong> was discarded from your mailbox.
+        </div>
+      </div>
+    );
+  }
 
   // Mail Inbox Read card
   if (cmd === "read_mail" && task.status === "completed") {
@@ -187,6 +461,47 @@ function ResponseCard({ task, message }) {
           </div>
         ) : (
           <div className="mail-empty">✓ Your mailbox is completely up to date.</div>
+        )}
+      </div>
+    );
+  }
+
+  // Mail Search Results card
+  if (cmd === "search_mail" && task.status === "completed") {
+    const emails = task.auditTrail?.find(e => e.data?.emails)?.data?.emails || [];
+    const q = task.params?.query || task.params?.sender || "";
+    return (
+      <div className="result-card mail-card">
+        <div className="result-card-header">
+          <div className="result-card-icon mail-icon"><Search size={15} /></div>
+          <span>Email Search Results</span>
+          <LanguageBadge lang={lang} />
+          {q && <span style={{ marginLeft: "8px", fontSize: "11px", color: "var(--accent)" }}>"{q}"</span>}
+          <span style={{ marginLeft: "auto", fontSize: "11px", color: "var(--text-muted)" }}>{emails.length} found</span>
+        </div>
+        {emails.length > 0 ? (
+          <div className="mail-list">
+            {emails.map((email, i) => (
+              <div key={i} className="mail-item">
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                  <span className="badge" style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "4px", background: "rgba(59, 130, 246, 0.12)", color: "var(--brand-accent)" }}>
+                    {email.account || "Apple Mail"} · {email.mailbox || "INBOX"}
+                  </span>
+                  {email.is_read === false && (
+                    <span className="badge" style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "4px", background: "rgba(239, 68, 68, 0.12)", color: "#ef4444" }}>
+                      UNREAD
+                    </span>
+                  )}
+                </div>
+                <div className="mail-from"><AtSign size={11} /><span>{email.sender}</span></div>
+                <div className="mail-subject">{email.subject}</div>
+                {email.snippet && <div className="mail-snippet">{email.snippet}</div>}
+                <div className="mail-date"><Clock size={10} />{email.date}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mail-empty">No emails found matching your query.</div>
         )}
       </div>
     );
@@ -269,6 +584,11 @@ function ResponseCard({ task, message }) {
               Awaiting Approval
             </span>
           )}
+          {task.status === "paused_model_unavailable" && (
+            <span className="task-status-badge badge-paused" style={{ marginLeft: "auto", fontSize: "11px", color: "var(--warn)", background: "rgba(234, 179, 8, 0.15)", padding: "2px 8px", borderRadius: "4px" }}>
+              ⏸ Paused (Model Unavailable)
+            </span>
+          )}
         </div>
         <div className="draft-fields">
           <div className="draft-field">
@@ -321,8 +641,14 @@ function ResponseCard({ task, message }) {
 
   // Generic card with markdown
   return (
-    <div className="ai-response-card">
+    <div className={`ai-response-card ${task.status === "paused_model_unavailable" ? "paused-model-card" : ""}`}>
       {lang && lang !== "en" && <LanguageBadge lang={lang} />}
+      {task.status === "paused_model_unavailable" && (
+        <div className="task-status-badge badge-paused" style={{ display: "inline-flex", alignItems: "center", gap: "6px", marginBottom: "8px", fontSize: "11px", color: "var(--warn)", background: "rgba(234, 179, 8, 0.15)", padding: "3px 8px", borderRadius: "4px" }}>
+          <span>⏸</span>
+          <strong>Paused — Cloud AI Model Unavailable</strong>
+        </div>
+      )}
       <FormattedMessage content={message} />
     </div>
   );
@@ -846,12 +1172,334 @@ function SettingsModal({
             <div style={{ display: "flex", flexDirection: "column", gap: "10px", fontSize: "13px", lineHeight: "1.6", color: "var(--text-muted)" }}>
               <div style={{ fontSize: "16px", fontWeight: 700, color: "var(--text)" }}>Cortex v0.3</div>
               <p>Personal, voice-first AI desktop companion inspired by the elegance, simplicity, and responsiveness of Apple Siri.</p>
-              <p>Powered by local speech processing, Gemini multimodal reasoning, Apple Mail automation, and zero-trust human-in-the-loop permission verification.</p>
+              <p>Powered by local speech processing, local Ollama (qwen3.5:9b) reasoning, Apple Mail automation, and zero-trust human-in-the-loop permission verification.</p>
               <div style={{ marginTop: "8px", fontSize: "11.5px", color: "var(--text-subtle)" }}>
                 Keyboard shortcuts: <strong>⌘K</strong> Command Palette • <strong>⌘,</strong> Settings • <strong>Esc</strong> Interrupt Speech
               </div>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Unified Email Composer & Review Card (Executive Personal AI Operator) ───
+function EmailComposerReviewCard({ task, onApproveSend, onSave, onCancel }) {
+  const p = task?.params || {};
+  const draft = p.draft || task?.draft || (task?.context && task?.context?.draft) || {};
+  const [recipient, setRecipient] = useState(resolveComposerRecipient(task));
+  const [senderAccount, setSenderAccount] = useState(resolveComposerSender(task));
+  const [subject, setSubject] = useState(resolveComposerSubject(task));
+  const [cc, setCc] = useState(Array.isArray(p.cc) ? p.cc.join(", ") : (p.cc || (Array.isArray(draft.cc) ? draft.cc.join(", ") : (draft.cc || ""))));
+  const [bcc, setBcc] = useState(Array.isArray(p.bcc) ? p.bcc.join(", ") : (p.bcc || (Array.isArray(draft.bcc) ? draft.bcc.join(", ") : (draft.bcc || ""))));
+  const [body, setBody] = useState(resolveComposerBody(task));
+  const [attachments, setAttachments] = useState(Array.isArray(p.attachments) ? p.attachments : (Array.isArray(draft.attachments) ? draft.attachments : []));
+  const [showCcBcc, setShowCcBcc] = useState(Boolean((p.cc && (Array.isArray(p.cc) ? p.cc.length > 0 : p.cc)) || (p.bcc && (Array.isArray(p.bcc) ? p.bcc.length > 0 : p.bcc))));
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Validation: Recipient and Subject must be non-empty before approval
+  const isValid = Boolean(recipient && recipient.trim() && subject && subject.trim());
+
+  // Sync state whenever server task updates (e.g. conversational edits or fresh approvals)
+  useEffect(() => {
+    if (!task) return;
+    const nextRec = resolveComposerRecipient(task);
+    setRecipient(nextRec);
+    const nextSender = resolveComposerSender(task);
+    setSenderAccount(nextSender);
+    const nextSubj = resolveComposerSubject(task);
+    setSubject(nextSubj);
+    const nextBody = resolveComposerBody(task);
+    setBody(nextBody);
+
+    const nextP = task?.params || {};
+    const nextDraft = nextP.draft || task?.draft || (task?.context && task?.context?.draft) || {};
+    const ccVal = Array.isArray(nextP.cc) ? nextP.cc.join(", ") : (nextP.cc || (Array.isArray(nextDraft.cc) ? nextDraft.cc.join(", ") : (nextDraft.cc || "")));
+    const bccVal = Array.isArray(nextP.bcc) ? nextP.bcc.join(", ") : (nextP.bcc || (Array.isArray(nextDraft.bcc) ? nextDraft.bcc.join(", ") : (nextDraft.bcc || "")));
+    setCc(ccVal);
+    setBcc(bccVal);
+    if (ccVal || bccVal) setShowCcBcc(true);
+
+    const atts = Array.isArray(nextP.attachments) ? nextP.attachments : (Array.isArray(nextDraft.attachments) ? nextDraft.attachments : []);
+    setAttachments(atts);
+    setIsDirty(false);
+  }, [
+    task,
+    task?.id,
+    task?.stateVersion,
+    task?.state_version,
+    task?.approvalHash,
+    task?.params?.approval_hash,
+    task?.params?.formatted_body,
+    task?.params?.body,
+    task?.params?.subject,
+    task?.params?.recipient,
+    task?.params?.recipient_email,
+  ]);
+
+  async function handleApprove() {
+    if (!isValid) return;
+    setIsSaving(true);
+    try {
+      await onApproveSend({
+        recipient,
+        subject,
+        body,
+        attachments,
+        sender_account: senderAccount,
+        cc,
+        bcc,
+      }, isDirty);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleSaveClick() {
+    setIsSaving(true);
+    try {
+      await onSave({
+        recipient,
+        subject,
+        body,
+        attachments,
+        sender_account: senderAccount,
+        cc,
+        bcc,
+      });
+      setIsDirty(false);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="email-composer-card">
+      {/* Header */}
+      <div className="composer-card-header">
+        <div className="composer-header-title">
+          <div className="composer-icon-badge">
+            <Mail size={16} />
+          </div>
+          <div>
+            <div className="composer-title-text">Review & Approve Email</div>
+            <div className="composer-subtitle-text">Personal AI Executive Mail Operator</div>
+          </div>
+        </div>
+        <div className="composer-header-badges">
+          <span className="composer-pill composer-pill-saved">
+            <CheckCircle2 size={12} />
+            <span>Saved in Mailbox</span>
+          </span>
+          <span className="composer-pill composer-pill-pending">
+            <Clock size={12} />
+            <span>Awaiting Approval</span>
+          </span>
+        </div>
+      </div>
+
+      {/* Composer Metadata Fields */}
+      <div className="composer-meta-section">
+        {/* From Row */}
+        {senderAccount && (
+          <div className="composer-row">
+            <span className="composer-label">From</span>
+            <div className="composer-readonly-val">{senderAccount}</div>
+            {!showCcBcc && (
+              <button
+                type="button"
+                className="composer-toggle-btn"
+                onClick={() => setShowCcBcc(true)}
+              >
+                + CC / BCC
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* To Row */}
+        <div className="composer-row">
+          <span className="composer-label">To</span>
+          <input
+            type="text"
+            className="composer-field-input"
+            value={recipient}
+            onChange={e => {
+              setRecipient(e.target.value);
+              setIsDirty(true);
+            }}
+            placeholder="recipient@example.com"
+            aria-label="Recipient"
+          />
+          {!senderAccount && !showCcBcc && (
+            <button
+              type="button"
+              className="composer-toggle-btn"
+              onClick={() => setShowCcBcc(true)}
+            >
+              + CC / BCC
+            </button>
+          )}
+        </div>
+
+        {/* CC / BCC Rows (expandable) */}
+        {showCcBcc && (
+          <>
+            <div className="composer-row">
+              <span className="composer-label">CC</span>
+              <input
+                type="text"
+                className="composer-field-input"
+                value={cc}
+                onChange={e => {
+                  setCc(e.target.value);
+                  setIsDirty(true);
+                }}
+                placeholder="colleague@example.com, team@example.com"
+                aria-label="CC"
+              />
+            </div>
+            <div className="composer-row">
+              <span className="composer-label">BCC</span>
+              <input
+                type="text"
+                className="composer-field-input"
+                value={bcc}
+                onChange={e => {
+                  setBcc(e.target.value);
+                  setIsDirty(true);
+                }}
+                placeholder="audit@example.com"
+                aria-label="BCC"
+              />
+            </div>
+          </>
+        )}
+
+        {/* Subject Row */}
+        <div className="composer-row">
+          <span className="composer-label">Subject</span>
+          <input
+            type="text"
+            className="composer-field-input composer-field-input-subject"
+            value={subject}
+            onChange={e => {
+              setSubject(e.target.value);
+              setIsDirty(true);
+            }}
+            placeholder="Subject of the email"
+            aria-label="Subject"
+          />
+        </div>
+
+        {/* Attachments Row (if any) */}
+        {attachments && attachments.length > 0 && (
+          <div className="composer-row composer-row-attachments">
+            <span className="composer-label">Files</span>
+            <div className="composer-attachment-list">
+              {attachments.map((att, i) => (
+                <span key={i} className="composer-attachment-pill">
+                  <Paperclip size={11} />
+                  <span>{typeof att === "string" ? att.split("/").pop() : "attachment"}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Distinct Explicit Body Section */}
+      <div className="composer-body-section">
+        <div className="composer-body-header">
+          <span className="composer-label">Body</span>
+          <span className="composer-body-hint">Full editable email message</span>
+        </div>
+        <textarea
+          className="composer-body-textarea"
+          value={body}
+          onChange={e => {
+            setBody(e.target.value);
+            setIsDirty(true);
+          }}
+          placeholder="Compose email body…"
+          rows={Math.max(7, (body ? body.split("\n").length : 0) + 1)}
+          aria-label="Email Body"
+        />
+      </div>
+
+      {/* Validation Warning if Required Fields Missing */}
+      {!isValid && (
+        <div className="composer-validation-warning" role="alert">
+          <AlertTriangle size={14} />
+          <span>
+            {!recipient?.trim() && !subject?.trim()
+              ? "Recipient and Subject are required before approval."
+              : !recipient?.trim()
+              ? "Recipient email address is required before approval."
+              : "Email subject line is required before approval."}
+          </span>
+        </div>
+      )}
+
+      {/* Footer & Action Bar */}
+      <div className="composer-card-footer">
+        <div className="composer-footer-info">
+          {isDirty ? (
+            <span className="composer-dirty-indicator">
+              <span className="composer-dirty-dot" />
+              Unsaved changes — auto-binds to approval hash on send
+            </span>
+          ) : saveSuccess ? (
+            <span className="composer-success-indicator">
+              <Check size={13} /> Saved to Apple Mail draft
+            </span>
+          ) : (
+            <span className="composer-hint-text">
+              Directly edit above, chat with Cortex to revise, or approve.
+            </span>
+          )}
+        </div>
+
+        <div className="composer-actions">
+          <button
+            type="button"
+            className="btn-composer-cancel"
+            onClick={onCancel}
+            disabled={isSaving}
+            title="Discard this draft and cancel"
+          >
+            <X size={14} />
+            <span>Cancel</span>
+          </button>
+
+          {isDirty && (
+            <button
+              type="button"
+              className="btn-composer-save"
+              onClick={handleSaveClick}
+              disabled={isSaving}
+              title="Save changes to Apple Mail draft"
+            >
+              <Save size={14} />
+              <span>Save Changes</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="btn-composer-approve-send"
+            onClick={handleApprove}
+            disabled={isSaving || !isValid}
+            title={!isValid ? "Recipient and Subject are required before approval" : "Approve and dispatch email"}
+          >
+            <Send size={14} />
+            <span>Approve & Send</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1046,6 +1694,9 @@ function App() {
   const [theme, setTheme]                   = useState("light");
   const [reducedMotion, setReducedMotion]   = useState(false);
   const [isFloating, setIsFloating]         = useState(false);
+  const [localAiStatus, setLocalAiStatus]   = useState("Connecting to Ollama…");
+  const [localAiReady, setLocalAiReady]     = useState(false);
+  const [localAiError, setLocalAiError]     = useState(null);
 
   const turnsEndRef           = useRef(null);
   const wakeRecognizerRef     = useRef(null);
@@ -1068,6 +1719,42 @@ function App() {
   useEffect(() => {
     wakeWordActiveRef.current = wakeWordEnabled;
   }, [wakeWordEnabled]);
+
+  // Local AI lifecycle polling
+  useEffect(() => {
+    let isMounted = true;
+    let timer = null;
+
+    async function checkLlmStatus() {
+      try {
+        const res = await fetch(`${API}/api/llm/status`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (isMounted) {
+          setLocalAiStatus(data.status || "Connecting to Ollama…");
+          setLocalAiReady(Boolean(data.ready));
+          setLocalAiError(data.error || null);
+        }
+      } catch {
+        if (isMounted) {
+          setLocalAiStatus("Connecting to Ollama…");
+          setLocalAiReady(false);
+          setLocalAiError("Connecting to Cortex backend…");
+        }
+      } finally {
+        if (isMounted) {
+          const interval = localAiReady ? 5000 : 1500;
+          timer = setTimeout(checkLlmStatus, interval);
+        }
+      }
+    }
+
+    checkLlmStatus();
+    return () => {
+      isMounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [localAiReady]);
 
   useEffect(() => {
     voiceStateRef.current = voiceState;
@@ -1361,6 +2048,12 @@ function App() {
         .replace(/\s+/g, " ")
         .trim();
 
+      if (decoded.includes("Draft created and saved to your mailbox") || decoded.includes("Draft prepared")) {
+        const toMatch = decoded.match(/To:\s*([^\n]+)/);
+        const toName = toMatch ? toMatch[1].trim() : "the recipient";
+        speech = `I have prepared an email draft for ${toName}. Please review and approve it below.`;
+      }
+
       if (!speech) {
         isSpeakingRef.current = false;
         if (audioActiveRef.current) {
@@ -1533,34 +2226,83 @@ function App() {
     setTurns(prev => [...prev, newTurn]);
 
     try {
-      const res = await fetch(`${API}/chat`, {
+      let finalMessage = "";
+      let finalTask = null;
+      let lang = "en";
+
+      const streamRes = await fetch(`${API}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text, source, preferred_language: preferredLang }),
       });
-      const data = await res.json();
-      const lang = data.task?.language || "en";
+
+      if (streamRes.ok && streamRes.body) {
+        const reader = streamRes.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let accumulated = "";
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("data: ")) {
+              try {
+                const event = JSON.parse(trimmed.slice(6));
+                if (event.token) {
+                  accumulated += event.token;
+                  setAssistant(accumulated);
+                  setTurns(prev => prev.map(t => t.id === turnId ? { ...t, response: accumulated } : t));
+                }
+                if (event.done) {
+                  finalMessage = event.message || accumulated;
+                  finalTask = event.task || null;
+                  lang = event.task?.language || "en";
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        if (!finalMessage) finalMessage = accumulated;
+      } else {
+        // Fallback to synchronous /chat endpoint
+        const fallbackRes = await fetch(`${API}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text, source, preferred_language: preferredLang }),
+        });
+        const data = await fallbackRes.json();
+        finalMessage = data.message;
+        finalTask = data.task || null;
+        lang = data.task?.language || "en";
+      }
+
       setDetectedLang(lang);
-      setAssistant(data.message);
-      setTask(data.task || null);
+      setAssistant(finalMessage);
+      setTask(finalTask);
 
       setTurns(prev => prev.map(t => t.id === turnId ? {
         ...t,
-        response: data.message,
-        task: data.task || null,
+        response: finalMessage,
+        task: finalTask,
         language: lang,
       } : t));
 
-      if (data.task?.requiresApproval && data.task?.status === "waiting_approval") {
+      if (finalTask?.requiresApproval && (finalTask?.status === "waiting_approval" || finalTask?.status === "awaiting_approval")) {
         setVoiceState("confirming");
         playChime("alert");
-      } else if (data.task?.status === "completed") {
+      } else if (finalTask?.status === "completed") {
         playChime("success");
       }
 
       setVoiceState("speaking");
-      speakText(data.message, lang, () => {
-        if (data.task?.requiresApproval && data.task?.status === "waiting_approval") {
+      speakText(finalMessage, lang, () => {
+        if (finalTask?.requiresApproval && (finalTask?.status === "waiting_approval" || finalTask?.status === "awaiting_approval")) {
           setVoiceState("confirming");
         } else if (audioActiveRef.current) {
           setVoiceState("standby");
@@ -1632,7 +2374,7 @@ function App() {
         }]);
       }
 
-      if (data.task?.requiresApproval && data.task?.status === "waiting_approval") {
+      if (data.task?.requiresApproval && (data.task?.status === "waiting_approval" || data.task?.status === "awaiting_approval")) {
         setVoiceState("confirming");
         playChime("alert");
       } else if (data.task?.status === "completed") {
@@ -1641,7 +2383,7 @@ function App() {
 
       setVoiceState("speaking");
       speakText(data.message, lang, () => {
-        if (data.task?.requiresApproval && data.task?.status === "waiting_approval") {
+        if (data.task?.requiresApproval && (data.task?.status === "waiting_approval" || data.task?.status === "awaiting_approval")) {
           setVoiceState("confirming");
         } else if (audioActiveRef.current) {
           setVoiceState("standby");
@@ -1741,7 +2483,7 @@ function App() {
       audioActiveRef.current = true;
       setAudioEnabled(true);
       setVoiceState("standby");
-      setAssistant("Hands-free activated. Say 'Hey Cortex' or tap the orb to speak!");
+      setAssistant("Hands-free activated. Say 'Hey Cortex' or tap the mic to speak!");
       speakText("I'm ready. Say Hey Cortex anytime.", "en", () => {
         setVoiceState("standby");
         if (wakeWordActiveRef.current) {
@@ -1753,8 +2495,8 @@ function App() {
     }
   }
 
-  // ─── Orb Tap Handler (Push-to-Talk / Interrupt) ─────────────────────────────
-  function handleOrbClick() {
+  // ─── Voice Mic Handler (Push-to-Talk / Interrupt) ───────────────────────────
+  function handleMicClick() {
     if (!audioEnabled) {
       toggleAudio();
       return;
@@ -1773,6 +2515,7 @@ function App() {
     setAssistant("Listening to your request…");
     startAudioPipeline();
   }
+  const handleOrbClick = handleMicClick;
 
   // ─── Cryptographic Action Approval / Rejection ──────────────────────────────
   async function decide(approved, explicitHash = null) {
@@ -1854,6 +2597,18 @@ function App() {
     await decide(true, newHash);
   }
 
+  async function handleComposerApproveSend(fields, isDirty) {
+    if (isDirty) {
+      await handleSaveAndApprove(fields);
+    } else {
+      await decide(true);
+    }
+  }
+
+  async function handleComposerSave(fields) {
+    await handleSaveEdit(fields);
+  }
+
   // ─── Clear Session ──────────────────────────────────────────────────────────
   async function clearSession() {
     setTurns([]);
@@ -1863,14 +2618,6 @@ function App() {
       await fetch(`${API}/session/clear`, { method: "POST" });
     } catch {}
   }
-
-  const orbState =
-    voiceState === "speaking" ? "speaking" :
-    voiceState === "wake_detected" ? "wake_detected" :
-    voiceState === "capturing" || listening ? "capturing listening" :
-    voiceState === "transcribing" || loading ? "transcribing thinking" :
-    voiceState === "confirming" ? "confirming" :
-    voiceState === "standby" ? "standby" : "";
 
   const currentLang = task?.language || detectedLang || "en";
 
@@ -1909,7 +2656,16 @@ function App() {
         </div>
 
         <div className="titlebar-actions">
-          {/* Status Pill */}
+          {/* Local AI Status Pill */}
+          <div
+            className={`local-ai-status-pill ${localAiReady ? "ready" : (localAiError ? "unavailable" : "loading")}`}
+            title={localAiError ? `${localAiStatus}: ${localAiError}` : localAiStatus}
+          >
+            <span className="local-ai-status-dot" />
+            <span>{localAiStatus}</span>
+          </div>
+
+          {/* Voice Status Pill */}
           <div className={`voice-status-pill ${voiceState}`}>
             <span className="voice-status-dot" />
             <span>
@@ -1969,34 +2725,6 @@ function App() {
       {/* ── Central Stage ── */}
       <div className="shell">
         <div className="stage">
-          {/* Animated Siri-Inspired Cortex Orb */}
-          <div className={`orb-wrap ${orbState}`} onClick={handleOrbClick}>
-            <div className="orb-glow-field" />
-            <div className="orb-ring orb-ring-3" />
-            <div className="orb-ring orb-ring-2" />
-            <div className="orb-ring orb-ring-1" />
-            <button
-              className="voiceButton"
-              title={
-                voiceState === "speaking" ? "Click to interrupt speech" :
-                voiceState === "capturing" ? "Click to finish speaking" :
-                audioEnabled ? "Click to speak (or say 'Hey Cortex')" : "Click to activate voice assistant"
-              }
-              aria-label="Voice Orb"
-            >
-              {voiceState === "speaking" ? <Volume2 size={48} /> :
-               (listening || voiceState === "capturing") ? <MicOff size={48} /> :
-               <Mic size={48} />}
-            </button>
-          </div>
-
-          {/* Acoustic Waveform */}
-          <div className={`waveform ${orbState}`} aria-hidden="true">
-            {Array.from({ length: 24 }).map((_, i) => (
-              <span key={i} style={{ "--i": i + 1 }} />
-            ))}
-          </div>
-
           {/* Floating Stop Speaking Pill when active */}
           {(voiceState === "speaking" || isSpeakingRef.current) && (
             <button className="stop-speaking-pill" onClick={interruptSpeech}>
@@ -2010,6 +2738,13 @@ function App() {
             {turns.length === 0 ? (
               <div className="empty-stage-container">
                 <h1 className="stage-headline">How can I assist you today?</h1>
+                {!localAiReady && (
+                  <div className={`stage-status-notice ${localAiError ? "unavailable" : "loading"}`}>
+                    <span className="stage-status-dot" />
+                    <span className="stage-status-text">{localAiStatus}</span>
+                    {localAiError && <p className="stage-status-error">{localAiError}</p>}
+                  </div>
+                )}
               </div>
             ) : (
               turns.map((turn) => (
@@ -2058,50 +2793,60 @@ function App() {
               ))
             )}
 
-            {/* Live Approval Card (Cryptographic Security Gate) */}
-            {task?.requiresApproval && task.status === "waiting_approval" && (
-              <div className="approval-card">
-                <div className="approval-header">
-                  <AlertTriangle size={16} />
-                  <span>Consequential Action Requires Your Approval</span>
-                </div>
-                <div className="approval-desc">
-                  Cortex proposes to execute: <strong>{task.command?.replace(/_/g, " ")}</strong>
-                  {task.params?.recipient && <> → <em>{task.params.recipient}</em></>}
-                  {task.params?.sender_account && <><br /><small>From: {task.params.sender_account}</small></>}
-                  {task.params?.cc && (Array.isArray(task.params.cc) ? task.params.cc.length > 0 : Boolean(task.params.cc)) && (
-                    <><br /><small>CC: {Array.isArray(task.params.cc) ? task.params.cc.join(", ") : task.params.cc}</small></>
-                  )}
-                  {task.params?.bcc && (Array.isArray(task.params.bcc) ? task.params.bcc.length > 0 : Boolean(task.params.bcc)) && (
-                    <><br /><small>BCC: {Array.isArray(task.params.bcc) ? task.params.bcc.join(", ") : task.params.bcc}</small></>
-                  )}
-                  {task.params?.subject && <><br /><small>Subject: {task.params.subject}</small></>}
-                  {task.params?.attachments && (Array.isArray(task.params.attachments) ? task.params.attachments.length > 0 : Boolean(task.params.attachments)) && (
-                    <><br /><small>Attachments: {Array.isArray(task.params.attachments) ? task.params.attachments.join(", ") : task.params.attachments}</small></>
-                  )}
-                  <br />
-                  <span className="approval-hash-badge">
-                    Approval SHA-256: {task.params?.approval_hash?.slice(0, 16)}…
-                  </span>
-                </div>
-                <div className="approval-actions">
-                  {task.params?.draft_only ? (
-                    <div style={{ padding: "6px 12px", background: "rgba(59, 130, 246, 0.12)", color: "var(--brand-accent)", borderRadius: "6px", fontSize: "12px", fontWeight: 500 }}>
-                      Draft only — not sent. Direct send disabled.
-                    </div>
-                  ) : (
-                    <button className="btn-approve" onClick={() => decide(true)}>
-                      <Check size={14} /> Approve & Send
+            {/* Live Approval Card / Unified Email Composer (Cryptographic Security Gate) */}
+            {task?.requiresApproval && (task.status === "waiting_approval" || task.status === "awaiting_approval") && (
+              ["send_mail", "draft_mail", "reply_mail", "forward_mail"].includes(task.command) ? (
+                <EmailComposerReviewCard
+                  key={task.id || "active-email-composer"}
+                  task={task}
+                  onApproveSend={handleComposerApproveSend}
+                  onSave={handleComposerSave}
+                  onCancel={() => decide(false)}
+                />
+              ) : (
+                <div className="approval-card">
+                  <div className="approval-header">
+                    <AlertTriangle size={16} />
+                    <span>Consequential Action Requires Your Approval</span>
+                  </div>
+                  <div className="approval-desc">
+                    Cortex proposes to execute: <strong>{task.command?.replace(/_/g, " ")}</strong>
+                    {task.params?.recipient && <> → <em>{task.params.recipient}</em></>}
+                    {task.params?.sender_account && <><br /><small>From: {task.params.sender_account}</small></>}
+                    {task.params?.cc && (Array.isArray(task.params.cc) ? task.params.cc.length > 0 : Boolean(task.params.cc)) && (
+                      <><br /><small>CC: {Array.isArray(task.params.cc) ? task.params.cc.join(", ") : task.params.cc}</small></>
+                    )}
+                    {task.params?.bcc && (Array.isArray(task.params.bcc) ? task.params.bcc.length > 0 : Boolean(task.params.bcc)) && (
+                      <><br /><small>BCC: {Array.isArray(task.params.bcc) ? task.params.bcc.join(", ") : task.params.bcc}</small></>
+                    )}
+                    {task.params?.subject && <><br /><small>Subject: {task.params.subject}</small></>}
+                    {task.params?.attachments && (Array.isArray(task.params.attachments) ? task.params.attachments.length > 0 : Boolean(task.params.attachments)) && (
+                      <><br /><small>Attachments: {Array.isArray(task.params.attachments) ? task.params.attachments.join(", ") : task.params.attachments}</small></>
+                    )}
+                    <br />
+                    <span className="approval-hash-badge">
+                      Approval SHA-256: {task.params?.approval_hash?.slice(0, 16)}…
+                    </span>
+                  </div>
+                  <div className="approval-actions">
+                    {task.params?.draft_only ? (
+                      <div style={{ padding: "6px 12px", background: "rgba(59, 130, 246, 0.12)", color: "var(--brand-accent)", borderRadius: "6px", fontSize: "12px", fontWeight: 500 }}>
+                        Draft only — not sent. Direct send disabled.
+                      </div>
+                    ) : (
+                      <button className="btn-approve" onClick={() => decide(true)}>
+                        <Check size={14} /> Approve & Send
+                      </button>
+                    )}
+                    <button className="btn-edit" onClick={() => setEditModalOpen(true)}>
+                      <FileEdit size={14} /> Edit Draft Details
                     </button>
-                  )}
-                  <button className="btn-edit" onClick={() => setEditModalOpen(true)}>
-                    <FileEdit size={14} /> Edit Draft Details
-                  </button>
-                  <button className="btn-reject" onClick={() => decide(false)}>
-                    <X size={14} /> Reject Action
-                  </button>
+                    <button className="btn-reject" onClick={() => decide(false)}>
+                      <X size={14} /> Reject Action
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )
             )}
 
             <div ref={turnsEndRef} />
@@ -2116,21 +2861,31 @@ function App() {
               className="composer-input"
               value={message}
               onChange={e => setMessage(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && sendMessage("text")}
-              placeholder="Ask anything, type a command, or say 'Hey Cortex'…"
+              onKeyDown={e => e.key === "Enter" && localAiReady && sendMessage("text")}
+              placeholder={
+                !localAiReady
+                  ? `Chat unavailable (${localAiStatus})…`
+                  : "Ask anything, type a command, or say 'Hey Cortex'…"
+              }
+              disabled={!localAiReady}
             />
             <button
               className="composer-btn primary"
               onClick={() => sendMessage("text")}
-              disabled={loading || !message.trim()}
-              title="Send text message"
+              disabled={loading || !localAiReady || !message.trim()}
+              title={!localAiReady ? localAiStatus : "Send text message"}
             >
               <Send size={15} />
             </button>
             <button
               className={`composer-btn ${listening ? "listening" : ""}`}
-              onClick={handleOrbClick}
-              title={audioEnabled ? (listening ? "Mute mic" : "Tap to speak") : "Enable audio first"}
+              onClick={handleMicClick}
+              disabled={!localAiReady}
+              title={
+                !localAiReady
+                  ? localAiStatus
+                  : (audioEnabled ? (listening ? "Mute mic" : "Tap to speak") : "Enable audio first")
+              }
             >
               {listening ? <MicOff size={15} /> : <Mic size={15} />}
             </button>
@@ -2167,7 +2922,7 @@ function App() {
         />
       )}
 
-      {editModalOpen && task?.status === "waiting_approval" && (
+      {editModalOpen && (task?.status === "waiting_approval" || task?.status === "awaiting_approval") && (
         <EditDraftModal
           task={task}
           onClose={() => setEditModalOpen(false)}

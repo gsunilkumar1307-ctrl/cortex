@@ -28,48 +28,58 @@ echo -e "${C}  ║  Premium AI Desktop Assistant      ║${NC}"
 echo -e "${C}  ╚═══════════════════════════════════╝${NC}"
 echo ""
 
-# ── 1. Gemini API key ──────────────────────────────────────
-if [ -z "${GEMINI_API_KEY:-}" ]; then
-  if [ -f "$ROOT/.env" ]; then
-    SAVED_KEY=$(grep -E "^GEMINI_API_KEY=" "$ROOT/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-    if [ -n "$SAVED_KEY" ]; then
-      export GEMINI_API_KEY="$SAVED_KEY"
-    fi
-  fi
-fi
+# ── 1. Local Ollama & Model Configuration ─────────────────
+export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+export OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:9b}"
 
-if [ -z "${GEMINI_API_KEY:-}" ]; then
-  if [ -f "$HOME/.zshrc" ]; then
-    SAVED_KEY=$(grep -E "^export GEMINI_API_KEY=" "$HOME/.zshrc" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2 || true)
-    if [ -n "$SAVED_KEY" ]; then
-      export GEMINI_API_KEY="$SAVED_KEY"
-    fi
-  fi
-fi
-
-if [ -z "${GEMINI_API_KEY:-}" ]; then
-  echo -e "${Y}  GEMINI_API_KEY not set.${NC}"
-  if [ -t 0 ]; then
-    echo -n "  Paste your Gemini API key (or press Enter for Local Offline Mode): "
-    read -r USER_KEY || true
-    if [ -n "$USER_KEY" ]; then
-      export GEMINI_API_KEY="$USER_KEY"
-      PROFILE="$HOME/.zshrc"
-      [ ! -f "$PROFILE" ] && touch "$PROFILE"
-      if ! grep -q "GEMINI_API_KEY" "$PROFILE" 2>/dev/null; then
-        echo "" >> "$PROFILE"
-        echo "export GEMINI_API_KEY=\"$GEMINI_API_KEY\"  # Added by Cortex" >> "$PROFILE"
-        ok "API key saved to ~/.zshrc (permanent — won't ask again)"
-      fi
-    fi
-  fi
-fi
-
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-  ok "Gemini API key configured"
+info "Verifying local Ollama service at $OLLAMA_HOST..."
+if curl -s -f "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
+  ok "Local Ollama service active"
 else
-  warn "Running in Local Mode (offline regex intent engine + Apple Mail automation)"
+  info "Local Ollama service not running. Starting Ollama automatically..."
+  OLLAMA_BIN="$(which ollama 2>/dev/null || true)"
+  [ -z "$OLLAMA_BIN" ] && [ -x "/usr/local/bin/ollama" ] && OLLAMA_BIN="/usr/local/bin/ollama"
+  [ -z "$OLLAMA_BIN" ] && [ -x "/opt/homebrew/bin/ollama" ] && OLLAMA_BIN="/opt/homebrew/bin/ollama"
+  [ -z "$OLLAMA_BIN" ] && [ -x "/Applications/Ollama.app/Contents/Resources/ollama" ] && OLLAMA_BIN="/Applications/Ollama.app/Contents/Resources/ollama"
+
+  if [ -n "$OLLAMA_BIN" ]; then
+    if ! pgrep -x ollama >/dev/null 2>&1; then
+      "$OLLAMA_BIN" serve > "$LOG_DIR/ollama.log" 2>&1 &
+    fi
+  elif [ -d "/Applications/Ollama.app" ]; then
+    open -a Ollama --background
+  else
+    warn "Ollama installation not found. Local AI will be marked unavailable."
+  fi
+
+  # Bounded retries: wait for Ollama to become healthy (max 20s)
+  OLLAMA_READY=0
+  for i in $(seq 1 40); do
+    sleep 0.5
+    if curl -s -f "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
+      OLLAMA_READY=1
+      break
+    fi
+  done
+  if [ $OLLAMA_READY -eq 1 ]; then
+    ok "Local Ollama service started successfully"
+  else
+    warn "Local Ollama did not respond within 20s. Check $LOG_DIR/ollama.log"
+  fi
 fi
+
+if curl -s -f "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
+  MODEL_NAME="${OLLAMA_MODEL%%:*}"
+  if curl -s "$OLLAMA_HOST/api/tags" | grep -q "$MODEL_NAME"; then
+    ok "Local model verified: $OLLAMA_MODEL"
+  else
+    warn "Model $OLLAMA_MODEL not found in Ollama tags. Run: ollama pull $OLLAMA_MODEL"
+  fi
+else
+  warn "Local AI unavailable: Ollama service is not responding at $OLLAMA_HOST"
+fi
+ok "Inference engine: Local Ollama (Apple Silicon native MLX / zero cloud cost)"
+
 export CORTEX_EXECUTION_MODE="live"
 ok "Execution mode: live (automation enabled)"
 
@@ -110,7 +120,8 @@ if [ ! -d "$ROOT/backend" ]; then
   APP_DIR="$ROOT/cloud-brain"
 fi
 
-GEMINI_API_KEY="$GEMINI_API_KEY" \
+OLLAMA_HOST="$OLLAMA_HOST" \
+OLLAMA_MODEL="$OLLAMA_MODEL" \
   $PYTHON -m uvicorn "$APP_MODULE" \
   --host 127.0.0.1 \
   --port 8765 \

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -7,6 +8,23 @@ import subprocess
 import time
 from typing import Any
 from .base_provider import BaseEmailProvider
+
+logger = logging.getLogger(__name__)
+
+try:
+    from backend.core.contracts import MailDeliveryStatus
+except ImportError:
+    from core.contracts import MailDeliveryStatus
+
+try:
+    from backend.capabilities.safety import is_real_email_send_allowed
+except ImportError:
+    try:
+        from capabilities.safety import is_real_email_send_allowed
+    except ImportError:
+        def is_real_email_send_allowed() -> bool:
+            return os.getenv("CORTEX_ALLOW_REAL_EMAIL_SEND", "").strip() == "1"
+
 
 
 def extract_clean_email(raw: str) -> str:
@@ -60,10 +78,7 @@ class AppleMailProvider(BaseEmailProvider):
 
     def get_accounts(self) -> list[dict[str, str]]:
         if self.dry_run or self.system != "darwin":
-            return [
-                {"name": "Primary Account", "email": "me@cortex.internal"},
-                {"name": "College Account", "email": "student@university.edu"},
-            ]
+            return [{"name": "Default Account", "email": "user@mac.local"}]
         try:
             script = """
             tell application "Mail"
@@ -374,16 +389,35 @@ class AppleMailProvider(BaseEmailProvider):
             "timestamp": time.time(),
         }
 
-        if self.dry_run or self.system != "darwin":
-            self._sent_records.append(record)
+        # Mandatory P7.5.3 Safety Gate: Real email transmission is permitted ONLY when
+        # CORTEX_ALLOW_REAL_EMAIL_SEND is explicitly set to '1'. All other values (unset,
+        # empty, '0', 'false', 'no', 'off', etc.) strictly block outbound transmission.
+        if not is_real_email_send_allowed():
+            logger.warning("AppleMailProvider: Outbound email sending blocked by safety policy. CORTEX_ALLOW_REAL_EMAIL_SEND is not '1'.")
+            if self.dry_run or self.system != "darwin":
+                return {
+                    "ok": False,
+                    "provider": "apple_mail",
+                    "status": MailDeliveryStatus.NOT_ATTEMPTED.value,
+                    "delivery_status": MailDeliveryStatus.NOT_ATTEMPTED.value,
+                    "message": f"Email send to {recipient} not attempted: dry-run or non-macOS environment.",
+                    "message_id": None,
+                    "data": record,
+                }
             return {
-                "ok": True,
+                "ok": False,
                 "provider": "apple_mail",
-                "status": "sent",
-                "message": f"Sent email to {recipient} with subject '{subject}'.",
-                "message_id": f"sent-{len(self._sent_records)}",
+                "status": MailDeliveryStatus.BLOCKED.value,
+                "delivery_status": MailDeliveryStatus.BLOCKED.value,
+                "message": f"Email sending to {recipient} is blocked by safety policy. Real email transmission is disabled in Phase P7.2.",
+                "error": "SEND_BLOCKED_BY_POLICY",
+                "message_id": None,
                 "data": record,
             }
+
+        # Check if an isolated test fixture injected an explicit mock sender
+        if getattr(self, "_mock_sender", None) is not None:
+            return self._mock_sender(recipient=recipient, subject=subject, body=body, account=account, attachments=attachments, cc=cc, bcc=bcc)
 
         script_parts = [
             'tell application "Mail"',
@@ -418,8 +452,9 @@ class AppleMailProvider(BaseEmailProvider):
             return {
                 "ok": True,
                 "provider": "apple_mail",
-                "status": "sent",
-                "message": f"Sent email to {recipient} with subject '{subject}'.",
+                "status": MailDeliveryStatus.SEND_ATTEMPTED.value,
+                "delivery_status": MailDeliveryStatus.DELIVERY_UNCONFIRMED.value,
+                "message": f"Send command dispatched to Mail.app for {recipient} with subject '{subject}'. Delivery unconfirmed pending Sent mailbox verification.",
                 "message_id": f"apple-mail-sent-{recipient}",
                 "data": record,
             }
@@ -465,58 +500,63 @@ class AppleMailProvider(BaseEmailProvider):
 
         return {"verified": bool(self._draft_records), "evidence": f"Draft recorded in session for {recipient}"}
 
-    def verify_message_sent(self, recipient: str, subject: str, since_timestamp: float | None = None) -> dict[str, Any]:
+    def verify_message_sent(self, recipient: str, subject: str, limit: int = 25, since_timestamp: float | None = None) -> dict[str, Any]:
+        """
+        Bounded, targeted verification of sent message against the real Sent mailbox.
+        Never performs an unbounded loop. Never fabricates success from in-memory records.
+        """
         target_email = extract_clean_email(recipient)
         norm_subj = (subject or "").strip()
 
-        # 1. Inspect in-memory session records
-        matching_records = []
-        for s in self._sent_records:
-            rec_email = extract_clean_email(s.get("recipient", ""))
-            s_subj = (s.get("subject") or "").strip()
-            # Exact recipient email match and subject equality
-            if rec_email == target_email and (not norm_subj or s_subj == norm_subj):
-                ts = s.get("timestamp")
-                if since_timestamp and ts and ts < (since_timestamp - 300.0):
-                    continue
-                matching_records.append(s)
+        # Check if an isolated test fixture injected a mock verifier
+        if getattr(self, "_mock_sent_verifier", None) is not None:
+            return self._mock_sent_verifier(recipient=recipient, subject=subject, limit=limit, since_timestamp=since_timestamp)
 
-        if len(matching_records) == 1:
-            return {
-                "verified": True,
-                "evidence": f"Verified submission to {recipient} with subject '{subject}' in Apple Mail sent register",
-            }
-        elif len(matching_records) > 1:
-            return {
-                "verified": False,
-                "uncertain": True,
-                "evidence": f"Inconclusive: multiple ({len(matching_records)}) matching sent records found for {recipient} with subject '{subject}'",
-            }
-
-        # 2. Inspect native Apple Mail Sent mailbox if on macOS
+        # Inspect native Apple Mail Sent mailbox if on macOS
         if self.system == "darwin" and not self.dry_run:
-            check_script = f"""
+            bounded_script = f"""
             tell application "Mail"
                 set matchCount to 0
+                set targetSubj to {_apple_string(norm_subj)}
+                set targetRec to {_apple_string(target_email)}
                 try
-                    repeat with m in (messages of sent mailbox)
+                    set totalSent to count of messages of sent mailbox
+                    if totalSent is 0 then return "NOT_FOUND"
+                    set scanLimit to {min(limit, 50)}
+                    if totalSent < scanLimit then set scanLimit to totalSent
+                    
+                    set candidateMessages to (messages 1 thru scanLimit of sent mailbox)
+                    repeat with m in candidateMessages
                         set mSubj to (subject of m)
-                        if mSubj is equal to {_apple_string(norm_subj)} or mSubj contains {_apple_string(norm_subj)} then
+                        set subjMatch to false
+                        if (targetSubj is "") or (mSubj is equal to targetSubj) or (mSubj contains targetSubj) then
+                            set subjMatch to true
+                        end if
+                        
+                        if subjMatch then
                             set rList to (address of every recipient of m)
-                            set isMatch to false
-                            repeat with rAddr in rList
-                                if rAddr contains {_apple_string(target_email)} then
-                                    set isMatch to true
-                                    exit repeat
-                                end if
-                            end repeat
-                            if isMatch then
+                            set recMatch to false
+                            if targetRec is "" then
+                                set recMatch to true
+                            else
+                                repeat with rAddr in rList
+                                    if (rAddr as string) contains targetRec then
+                                        set recMatch to true
+                                        exit repeat
+                                    end if
+                                end repeat
+                            end if
+                            
+                            if recMatch then
                                 set matchCount to matchCount + 1
                             end if
                         end if
                     end repeat
+                on error errMsg
+                    return "ERROR:" & errMsg
                 end try
-                if matchCount = 1 then
+                
+                if matchCount is 1 then
                     return "VERIFIED"
                 else if matchCount > 1 then
                     return "AMBIGUOUS"
@@ -526,15 +566,47 @@ class AppleMailProvider(BaseEmailProvider):
             end tell
             """
             try:
-                out = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5).stdout.strip()
+                out = subprocess.run(["osascript", "-e", bounded_script], capture_output=True, text=True, timeout=8).stdout.strip()
                 if out == "VERIFIED":
-                    return {"verified": True, "evidence": f"Confirmed single matching message in Apple Mail 'Sent' mailbox for {recipient}"}
+                    return {
+                        "verified": True,
+                        "status": MailDeliveryStatus.SENT_VERIFIED.value,
+                        "evidence": f"Confirmed single matching message in Apple Mail 'Sent' mailbox for {recipient}",
+                    }
                 elif out == "AMBIGUOUS":
-                    return {"verified": False, "uncertain": True, "evidence": f"Inconclusive: multiple messages match subject and recipient for {recipient}"}
-            except Exception:
-                pass
+                    return {
+                        "verified": False,
+                        "uncertain": True,
+                        "status": MailDeliveryStatus.DELIVERY_UNCONFIRMED.value,
+                        "evidence": f"Inconclusive: multiple messages match subject and recipient for {recipient}",
+                    }
+                elif out.startswith("ERROR:"):
+                    return {
+                        "verified": False,
+                        "uncertain": True,
+                        "status": MailDeliveryStatus.DELIVERY_UNCONFIRMED.value,
+                        "evidence": f"Sent mailbox query encountered error: {out[6:]}",
+                    }
+            except subprocess.TimeoutExpired:
+                return {
+                    "verified": False,
+                    "uncertain": True,
+                    "status": MailDeliveryStatus.DELIVERY_UNCONFIRMED.value,
+                    "evidence": "Verification timed out while querying Sent mailbox.",
+                }
+            except Exception as e:
+                return {
+                    "verified": False,
+                    "uncertain": True,
+                    "status": MailDeliveryStatus.DELIVERY_UNCONFIRMED.value,
+                    "evidence": f"Sent mailbox verification error: {e}",
+                }
 
-        return {"verified": False, "evidence": f"No definitive record of sent message found in sent mailbox for {recipient}"}
+        return {
+            "verified": False,
+            "status": MailDeliveryStatus.DELIVERY_UNCONFIRMED.value,
+            "evidence": f"No definitive record of sent message found in sent mailbox for {recipient}",
+        }
 
     def delete_draft(self, recipient: str, subject: str = "") -> dict[str, Any]:
         target = recipient.lower().strip()

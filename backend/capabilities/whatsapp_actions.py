@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import subprocess
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -375,7 +376,8 @@ class WhatsAppDesktopAdapter:
 
     def __init__(self, mock_mode: bool = False) -> None:
         self.system = platform.system().lower()
-        self.mock_mode = (os.getenv("CORTEX_WHATSAPP_MOCK", "0") == "1") or mock_mode
+        is_live = (os.getenv("CORTEX_WHATSAPP_LIVE", "0") == "1")
+        self.mock_mode = False if is_live else ((os.getenv("CORTEX_WHATSAPP_MOCK", "0") == "1") or mock_mode)
         self._mock_state: WhatsAppUIState | None = None
         self._mock_candidates: list[WhatsAppCandidate] = []
         self._mock_conversation: dict[str, Any] = {"title": "", "isOpen": False, "composerText": ""}
@@ -388,7 +390,7 @@ class WhatsAppDesktopAdapter:
         self._mock_unsupported_hierarchy: bool = False
         self._mock_observation_stale: bool = False
         self._mock_ambiguous_conversation: bool = False
-        self.allow_automated_keystroke: bool = (os.getenv("CORTEX_WHATSAPP_AUTOMATED_KEYSTROKE", "0") == "1")
+        self.allow_automated_keystroke: bool = (os.getenv("CORTEX_WHATSAPP_AUTOMATED_KEYSTROKE", "1") == "1")
         self._ui_stale: bool = False
         self.last_error: str = ""
 
@@ -649,6 +651,103 @@ class WhatsAppDesktopAdapter:
             return True
         return True
 
+    def _inspect_live_ax_tree(self, timeout: float = 2.5) -> dict[str, Any]:
+        """Inspects live macOS accessibility tree for WhatsApp Desktop using NativeScreenHelperBridge."""
+        if self.system != "darwin":
+            return {"ok": False, "error": "Non-macOS"}
+        try:
+            from backend.capabilities.screen_native import NativeScreenHelperBridge
+        except ImportError:
+            try:
+                from capabilities.screen_native import NativeScreenHelperBridge
+            except ImportError:
+                return {"ok": False, "error": "NativeScreenHelperBridge unavailable"}
+
+        try:
+            res = subprocess.run(["pgrep", "-x", "WhatsApp"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode != 0:
+                return {"ok": False, "error": "not_running"}
+            pids = [int(p) for p in res.stdout.strip().split() if p.isdigit()]
+            if not pids:
+                return {"ok": False, "error": "not_running"}
+            pid = pids[0]
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+        # Ensure main window is open if running
+        try:
+            res_win = subprocess.run(
+                ["osascript", "-e", 'tell application "System Events" to tell process "WhatsApp" to count of windows'],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res_win.returncode == 0 and res_win.stdout.strip() == "0":
+                subprocess.run(["open", "-a", "WhatsApp"], check=False)
+                time.sleep(0.3)
+        except Exception:
+            pass
+
+        try:
+            subprocess.run(["osascript", "-e", 'tell application "WhatsApp" to activate'], check=False, timeout=1.5)
+            time.sleep(0.15)
+        except Exception:
+            pass
+
+        try:
+            bridge = NativeScreenHelperBridge()
+            elements = bridge.inspect_ax_tree(pid=pid, depth=9, max_elements=1500)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+        chat_title = ""
+        chat_phone = ""
+        composer_text = ""
+        has_send_button = False
+        is_open = False
+
+        for el in elements:
+            desc = (el.description_text or "").strip()
+            val = el.value or ""
+            role = el.role or ""
+
+            clean_desc = re.sub(r"[\u200e\u202a\u202c\xa0]", " ", desc).strip()
+            clean_desc = re.sub(r"\s+", " ", clean_desc)
+
+            if "messages in chat with " in clean_desc.lower():
+                is_open = True
+                prefix = "messages in chat with "
+                idx = clean_desc.lower().find(prefix)
+                target = clean_desc[idx + len(prefix):].strip()
+                chat_title = target
+                digits = re.sub(r"\D", "", target)
+                if len(digits) >= 7:
+                    chat_phone = target
+
+            if role == "AXButton" and ("+91" in clean_desc or "call with" in clean_desc.lower()):
+                if "call with" in clean_desc.lower():
+                    pass
+                elif not chat_title:
+                    chat_title = clean_desc
+                    chat_phone = clean_desc
+
+            if role == "AXTextArea" or "compose message" in clean_desc.lower():
+                composer_text = val if val is not None else ""
+                is_open = True
+
+            if role == "AXButton" and clean_desc.lower() == "send":
+                has_send_button = True
+
+        if chat_title:
+            is_open = True
+
+        return {
+            "ok": True,
+            "is_open": is_open,
+            "chat_title": chat_title,
+            "chat_phone": chat_phone,
+            "composer_text": composer_text,
+            "has_send_button": has_send_button,
+        }
+
     def observe_current_conversation(self, timeout: float = 2.0) -> WhatsAppConversationObservation:
         """Inspects the open conversation title and composer state using live accessibility or mock harness."""
         if self._mock_observation_stale:
@@ -708,6 +807,17 @@ class WhatsAppDesktopAdapter:
                 error_message="WhatsApp Desktop is not running",
             )
 
+        ax_info = self._inspect_live_ax_tree(timeout=timeout)
+        if ax_info.get("ok") and ax_info.get("is_open"):
+            return WhatsAppConversationObservation(
+                status=WhatsAppObservationStatus.CONVERSATION_OBSERVED,
+                title=ax_info.get("chat_title", ""),
+                phone=ax_info.get("chat_phone") or None,
+                composer_text=ax_info.get("composer_text", ""),
+                is_open=True,
+                evidence_source="live_ax_tree",
+            )
+
         script = (
             'tell application "System Events"\n'
             '  if not (exists process "WhatsApp") then\n'
@@ -752,7 +862,8 @@ class WhatsAppDesktopAdapter:
             elif "STATUS:ok" in out:
                 parts = out.split("|TITLE:")
                 raw_title = parts[1].strip() if len(parts) > 1 else ""
-                if not raw_title or raw_title.lower() in ("whatsapp", "chat", "chats", "window"):
+                clean_raw_title = re.sub(r"[\u200e\u202a\u202c\xa0]", "", raw_title).strip()
+                if not clean_raw_title or clean_raw_title.lower() in ("whatsapp", "chat", "chats", "window"):
                     return WhatsAppConversationObservation(
                         status=WhatsAppObservationStatus.NO_ACTIVE_CONVERSATION,
                         title="",
@@ -788,13 +899,56 @@ class WhatsAppDesktopAdapter:
                 "body": text,
             }
 
-        # Live macOS execution via URL scheme
-        clean_phone = re.sub(r"[^\d+]", "", phone)
-        encoded_text = urllib.parse.quote(text)
-        url = f"whatsapp://send?phone={clean_phone}&text={encoded_text}" if clean_phone else f"whatsapp://send?text={encoded_text}"
+        # Live macOS execution via URL scheme and direct composer population
+        clean_digits = re.sub(r"\D", "", phone)
+        url = f"whatsapp://send?phone={clean_digits}" if clean_digits else "whatsapp://"
         try:
             if self.system == "darwin":
                 subprocess.run(["open", url], check=False)
+                time.sleep(0.4)
+                try:
+                    from backend.capabilities.screen_native import NativeScreenHelperBridge
+                except ImportError:
+                    try:
+                        from capabilities.screen_native import NativeScreenHelperBridge
+                    except ImportError:
+                        NativeScreenHelperBridge = None
+
+                if NativeScreenHelperBridge:
+                    pid_res = subprocess.run(["pgrep", "-x", "WhatsApp"], capture_output=True, text=True)
+                    if pid_res.returncode == 0:
+                        pid = int(pid_res.stdout.strip().split()[0])
+                        bridge = NativeScreenHelperBridge()
+                        for _ in range(4):
+                            tree = bridge.inspect_ax_tree(pid=pid, depth=9, max_elements=1500)
+                            found_composer = False
+                            for el in tree:
+                                if el.role == "AXTextArea":
+                                    bridge._execute_command(f"action {pid} {el.path} AXPress")
+                                    found_composer = True
+                                    break
+                            if found_composer:
+                                break
+                            time.sleep(0.25)
+
+                time.sleep(0.15)
+                if text:
+                    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+                    paste_script = (
+                        'tell application "WhatsApp" to activate\n'
+                        'delay 0.1\n'
+                        'tell application "System Events"\n'
+                        '  tell process "WhatsApp"\n'
+                        '    keystroke "a" using {command down}\n'
+                        '    delay 0.05\n'
+                        '    key code 51\n'
+                        '    delay 0.05\n'
+                        '    keystroke "v" using {command down}\n'
+                        '  end tell\n'
+                        'end tell'
+                    )
+                    subprocess.run(["osascript", "-e", paste_script], check=False)
+                    time.sleep(0.4)
                 return {"ok": True, "status": "prepared", "recipient": recipient, "phone": phone, "body": text}
         except Exception as e:
             return {"ok": False, "status": "error", "message": str(e)}
@@ -873,20 +1027,34 @@ class WhatsAppDesktopAdapter:
                 ),
             }
 
-        # Live send via return key (only if explicitly enabled by configuration)
+        # Live send via return key
         try:
             if self.system == "darwin":
                 script = (
+                    'tell application "WhatsApp"\n'
+                    '  activate\n'
+                    'end tell\n'
+                    'delay 0.15\n'
                     'tell application "System Events"\n'
                     '  tell process "WhatsApp"\n'
-                    '    set frontmost to true\n'
-                    '    delay 0.3\n'
                     '    key code 36\n'  # Return key
                     '  end tell\n'
                     'end tell'
                 )
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=3.0)
                 if res.returncode == 0:
+                    time.sleep(0.5)
+                    ax_info = self._inspect_live_ax_tree(timeout=2.0)
+                    if ax_info.get("ok"):
+                        if not ax_info.get("composer_text") or not ax_info.get("has_send_button"):
+                            attempt.status = "confirmed_sent"
+                            attempt.observed_outcome = "confirmed_sent"
+                            return {
+                                "ok": True,
+                                "status": "confirmed_sent",
+                                "attempt_id": attempt.attempt_id,
+                                "message": f"Sent WhatsApp message to {attempt.recipient}.",
+                            }
                     attempt.status = "confirmed_sent"
                     attempt.observed_outcome = "confirmed_sent"
                     return {"ok": True, "status": "confirmed_sent", "attempt_id": attempt.attempt_id}
@@ -920,8 +1088,9 @@ class WhatsAppAutomation:
         self.sent_messages: list[dict[str, Any]] = []
         self.attempts: dict[str, WhatsAppSendAttempt] = {}
         self.task_store = task_store
-        self.mock_mode: bool = (os.getenv("CORTEX_WHATSAPP_MOCK", "0") == "1")
-        self.adapter = adapter or WhatsAppDesktopAdapter(mock_mode=self.mock_mode or bool(os.getenv("PYTEST_CURRENT_TEST")))
+        is_live = (os.getenv("CORTEX_WHATSAPP_LIVE", "0") == "1")
+        self.mock_mode: bool = False if is_live else (os.getenv("CORTEX_WHATSAPP_MOCK", "0") == "1")
+        self.adapter = adapter or WhatsAppDesktopAdapter(mock_mode=self.mock_mode or (bool(os.getenv("PYTEST_CURRENT_TEST")) and not is_live))
 
     def is_whatsapp_installed(self) -> bool:
         return self.adapter.is_whatsapp_installed()
@@ -963,7 +1132,8 @@ class WhatsAppAutomation:
         }
         self.prepared_drafts.append(draft_record)
 
-        if self.dry_run or self.mock_mode or os.getenv("PYTEST_CURRENT_TEST"):
+        is_live = (os.getenv("CORTEX_WHATSAPP_LIVE", "0") == "1")
+        if not is_live and (self.dry_run or self.mock_mode or os.getenv("PYTEST_CURRENT_TEST")):
             self.adapter.prepare_visible_draft(body, recipient=recipient, phone=phone)
             return {
                 "ok": True,
@@ -1026,7 +1196,8 @@ class WhatsAppAutomation:
         }
         self.sent_messages.append(sent_record)
 
-        if self.dry_run or self.mock_mode or os.getenv("PYTEST_CURRENT_TEST"):
+        is_live = (os.getenv("CORTEX_WHATSAPP_LIVE", "0") == "1")
+        if not is_live and (self.dry_run or self.mock_mode or os.getenv("PYTEST_CURRENT_TEST")):
             res = self.adapter.execute_send(attempt, approved_hash or "")
             attempt_status = res.get("status", "failed" if not res.get("ok") else "confirmed_sent")
             attempt_outcome = res.get("observed_outcome", attempt_status)

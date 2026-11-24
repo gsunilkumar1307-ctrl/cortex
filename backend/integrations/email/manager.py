@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+import logging
+import os
 import platform
 from typing import Any
 from .base_provider import BaseEmailProvider
 from .apple_mail_provider import AppleMailProvider
 from .gmail_provider import GmailProvider
+
+logger = logging.getLogger(__name__)
+
+try:
+    from backend.core.contracts import MailDeliveryStatus
+except ImportError:
+    from core.contracts import MailDeliveryStatus
+
+try:
+    from backend.capabilities.safety import is_real_email_send_allowed
+except ImportError:
+    try:
+        from capabilities.safety import is_real_email_send_allowed
+    except ImportError:
+        def is_real_email_send_allowed() -> bool:
+            return os.getenv("CORTEX_ALLOW_REAL_EMAIL_SEND", "").strip() == "1"
+
 
 
 class MailProviderManager:
@@ -43,7 +62,7 @@ class MailProviderManager:
                 accounts.extend(accs)
             except Exception:
                 pass
-        return accounts or [{"name": "Primary Account", "email": "me@cortex.internal"}]
+        return accounts or [{"name": "Default Account", "email": "user@mac.local"}]
 
     def get_signature(self, account: str = "") -> str:
         provider = self.get_provider_for_account(account)
@@ -125,6 +144,20 @@ class MailProviderManager:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
     ) -> dict[str, Any]:
+        # Mandatory P7.5.3 Safety Gate: Real email transmission is permitted ONLY when
+        # CORTEX_ALLOW_REAL_EMAIL_SEND is explicitly set to '1'. All other values (unset,
+        # empty, '0', 'false', 'no', 'off', etc.) strictly block outbound transmission.
+        if not is_real_email_send_allowed():
+            logger.warning("MailProviderManager: Outbound email sending blocked by safety policy. CORTEX_ALLOW_REAL_EMAIL_SEND is not '1'.")
+            return {
+                "ok": False,
+                "status": MailDeliveryStatus.BLOCKED.value,
+                "delivery_status": MailDeliveryStatus.BLOCKED.value,
+                "message": f"Email sending to {recipient} is blocked by safety policy. Real email transmission is disabled in Phase P7.2.",
+                "error": "SEND_BLOCKED_BY_POLICY",
+                "data": {"recipient": recipient, "subject": subject, "account": account},
+            }
+
         provider = self.get_provider_for_account(account)
         return provider.send_message(recipient, subject, body, account, attachments, cc=cc, bcc=bcc)
 

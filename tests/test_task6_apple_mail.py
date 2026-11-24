@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from backend.agent.orchestrator import CortexOrchestrator
 from backend.core.contracts import TaskCommand, TaskStatus
 from backend.capabilities.mail_actions import clear_mail_records
@@ -10,9 +11,17 @@ class TestTask6AppleMail(unittest.TestCase):
     def setUp(self) -> None:
         clear_mail_records()
         self.orchestrator = CortexOrchestrator()
+        if hasattr(self.orchestrator, "task_store") and self.orchestrator.task_store:
+            with self.orchestrator.task_store._connect() as conn:
+                conn.execute("DELETE FROM mail_send_attempts")
+                conn.commit()
 
     def tearDown(self) -> None:
         clear_mail_records()
+        if hasattr(self.orchestrator, "task_store") and self.orchestrator.task_store:
+            with self.orchestrator.task_store._connect() as conn:
+                conn.execute("DELETE FROM mail_send_attempts")
+                conn.commit()
 
     def test_01_draft_mail_resolution_and_content(self) -> None:
         """Requirement 1, 3, 4, 5, 6:
@@ -114,10 +123,15 @@ class TestTask6AppleMail(unittest.TestCase):
         self.assertEqual(task.get("status"), TaskStatus.CANCELED.value)
         self.assertIsNone(task.get("params", {}).get("approval_hash"))
 
-    def test_06_send_it_approval_consumption_and_replay_protection(self) -> None:
+    @patch("backend.capabilities.mail_actions.MailAutomation.send_mail")
+    @patch("backend.capabilities.mail_actions.MailAutomation.verify_mail_sent")
+    def test_06_send_it_approval_consumption_and_replay_protection(self, mock_verify, mock_send) -> None:
         """Requirement 8 & 10:
         'Send it' executes approval, consumes approval hash once, delivers safely without external spam, and rejects replay.
         """
+        mock_send.return_value = {"ok": True, "delivery_status": "SENT_VERIFIED", "message": "Email sent to rahul@example.com."}
+        mock_verify.return_value = {"verified": True, "status": "SENT_VERIFIED", "delivery_status": "SENT_VERIFIED", "evidence": "Found in Sent mailbox"}
+
         self.orchestrator.chat("Draft an email to Rahul about tomorrow's project meeting. Do not send it.")
         send_res = self.orchestrator.chat("Send it")
 

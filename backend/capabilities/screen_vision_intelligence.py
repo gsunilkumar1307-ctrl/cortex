@@ -35,7 +35,7 @@ class VisualInterpretationResult:
     confidence: float = 0.0
     prompt_injection_detected: bool = False
     untrusted_sanitized_text: str = ""
-    model_provider: str = "gemini"
+    model_provider: str = "ollama"
     error: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,8 +65,8 @@ class MultimodalVisualIntelligenceEngine:
     """
 
     def __init__(self, api_key: Optional[str] = None) -> None:
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
-        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        self.api_key = api_key or ""
+        self.model_name = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 
     def sanitize_untrusted_screen_text(self, text: str) -> tuple[str, bool]:
         """Scans environmental screen text for prompt-injection markers."""
@@ -131,11 +131,12 @@ class MultimodalVisualIntelligenceEngine:
             image_bytes = Path(screenshot_path).read_bytes()
             b64_img = base64.b64encode(image_bytes).decode("utf-8")
 
-            # Import google-generativeai or google.genai
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                model = genai.GenerativeModel(self.model_name)
+                from backend.agent.ollama_client import OllamaModel
+            except ImportError:
+                from agent.ollama_client import OllamaModel
+            try:
+                model = OllamaModel(model_name=self.model_name)
             except Exception as e:
                 return VisualInterpretationResult(
                     ok=False,

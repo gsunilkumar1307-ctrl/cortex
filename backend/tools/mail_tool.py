@@ -116,6 +116,23 @@ class MailTool(BaseTool):
             )
 
         elif action == "send_mail":
+            # Check durable TaskStore idempotency if task_store is accessible
+            task_store = getattr(self, "task_store", None)
+            if not task_store and hasattr(self.mail, "task_store"):
+                task_store = getattr(self.mail, "task_store")
+            payload_hash = inputs.get("approval_hash") or inputs.get("payload_hash")
+            if task_store and payload_hash:
+                is_dup, dup_reason, _ = task_store.check_mail_send_duplicate(payload_hash)
+                if is_dup:
+                    duration_ms = (time.time() - start_time) * 1000
+                    return ExecutionResult(
+                        step_id=inputs.get("step_id", "send-step"),
+                        ok=False,
+                        message=dup_reason,
+                        error="DUPLICATE_SEND_PREVENTED",
+                        duration_ms=duration_ms,
+                    )
+
             try:
                 res = _call_adapter(self.mail.send_mail, account=account, attachments=attachments, cc=cc, bcc=bcc)
             except Exception as e:
@@ -150,13 +167,28 @@ class MailTool(BaseTool):
             )
 
         elif action == "search_mail":
-            res = self.mail.search_mail(inputs.get("query", ""))
+            res = self.mail.search_mail(
+                query=inputs.get("query", ""),
+                sender=inputs.get("sender", ""),
+                recipient=inputs.get("recipient", ""),
+                subject=inputs.get("subject", ""),
+                date_from=inputs.get("date_from"),
+                date_to=inputs.get("date_to"),
+                unread_only=bool(inputs.get("unread_only", False)),
+                account=inputs.get("account", ""),
+                mailbox=inputs.get("mailbox", ""),
+                limit=int(inputs.get("limit", 25) if str(inputs.get("limit", "")).isdigit() else 25),
+            )
             duration_ms = (time.time() - start_time) * 1000
             return ExecutionResult(
                 step_id=inputs.get("step_id", "search-step"),
                 ok=res.get("ok", False),
                 message=res.get("message", ""),
-                data={"emails": res.get("emails", [])},
+                data={
+                    "emails": res.get("emails", []),
+                    "execution_engine": res.get("execution_engine", "mcp"),
+                    "coverage": res.get("coverage", {}),
+                },
                 error=None if res.get("ok") else res.get("message"),
                 duration_ms=duration_ms,
             )
@@ -226,6 +258,28 @@ class MailTool(BaseTool):
                 duration_ms=duration_ms,
             )
 
+        elif action == "get_message":
+            msg_id = str(inputs.get("message_id") or inputs.get("id", "")).strip()
+            if not msg_id:
+                duration_ms = (time.time() - start_time) * 1000
+                return ExecutionResult(
+                    step_id=inputs.get("step_id", "get-msg-step"),
+                    ok=False,
+                    message="Missing message ID parameter.",
+                    error="MissingParam",
+                    duration_ms=duration_ms,
+                )
+            res = self.mail.get_message(msg_id) if hasattr(self.mail, "get_message") else {"ok": False, "message": "get_message unsupported"}
+            duration_ms = (time.time() - start_time) * 1000
+            return ExecutionResult(
+                step_id=inputs.get("step_id", "get-msg-step"),
+                ok=res.get("ok", False),
+                message=res.get("message", "Retrieved message content."),
+                data=res.get("email", {}) if res.get("ok") else {},
+                error=None if res.get("ok") else res.get("message"),
+                duration_ms=duration_ms,
+            )
+
         return ExecutionResult(
             step_id=inputs.get("step_id", "unknown-step"),
             ok=False,
@@ -258,14 +312,10 @@ class MailTool(BaseTool):
             if self.mail and hasattr(self.mail, "verify_mail_sent"):
                 send_check = self.mail.verify_mail_sent(recipient, subject)
             else:
-                try:
-                    from backend.capabilities.mail_actions import _sent_records
-                except ImportError:
-                    from capabilities.mail_actions import _sent_records
-                found = any(s.get("recipient", "").lower() == recipient.lower() for s in _sent_records)
-                send_check = {"verified": found, "evidence": "Checked sent register"}
+                send_check = {"verified": False, "status": "DELIVERY_UNCONFIRMED", "evidence": "Mail provider verification unavailable"}
             state["sent_found"] = send_check.get("verified", False)
             state["in_sent_mailbox"] = send_check.get("verified", False)
+            state["delivery_status"] = send_check.get("status", "DELIVERY_UNCONFIRMED")
             state["evidence"] = send_check.get("evidence", "")
 
         elif action in ("read_mail", "search_mail"):
@@ -347,19 +397,24 @@ class MailTool(BaseTool):
             check = {"verified": False}
             if self.mail and hasattr(self.mail, "verify_mail_sent"):
                 check = self.mail.verify_mail_sent(recipient, subject)
-            else:
-                try:
-                    from backend.capabilities.mail_actions import _sent_records
-                except ImportError:
-                    from capabilities.mail_actions import _sent_records
-                found = any(s.get("recipient", "").lower() == recipient.lower() for s in _sent_records)
-                check = {"verified": found}
 
             if check.get("verified"):
                 return {
                     "can_retry": False,
                     "strategy": "resolve_as_success",
                     "message": f"Email to {recipient} already exists in Sent mailbox (verified in Sent messages). Resolving without duplicate send.",
+                }
+
+        # Bounded Recovery for Search operations
+        if action == "search_mail" and attempt <= 2:
+            refinements = dict(inputs)
+            if refinements.get("subject") and not refinements.get("query"):
+                refinements["query"] = refinements.pop("subject")
+                return {
+                    "can_retry": True,
+                    "strategy": "refine_query",
+                    "refined_inputs": refinements,
+                    "message": f"Retrying search by relaxing subject filter to broad keyword query '{refinements['query']}'.",
                 }
 
         return {

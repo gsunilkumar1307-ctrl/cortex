@@ -83,28 +83,67 @@ class DesktopTool(BaseTool):
             title = params.get("title", "")
             state["task_verified"] = self.automation.verify_task_created(title)
 
-        elif cmd_str == "open_app" and self.automation and hasattr(self.automation, "is_app_running"):
-            app_name = params.get("appName", "")
-            state["app_running"] = self.automation.is_app_running(app_name)
-            if hasattr(self.automation, "is_app_active"):
-                state["app_active"] = self.automation.is_app_active(app_name)
+        elif cmd_str == "open_app" and self.automation:
+            if params.get("file_path") or params.get("folder"):
+                state["file_path"] = params.get("file_path", "")
+                state["folder"] = params.get("folder", "")
+                state["app_running"] = execution_result.ok
+            elif hasattr(self.automation, "is_app_running"):
+                app_name = params.get("appName", "")
+                if app_name:
+                    state["appName"] = app_name
+                    state["app_name"] = app_name
+                state["app_running"] = execution_result.ok or self.automation.is_app_running(app_name)
+                if hasattr(self.automation, "is_app_active"):
+                    state["app_active"] = self.automation.is_app_active(app_name)
+
+        elif cmd_str == "move_file":
+            from pathlib import Path
+            src = params.get("source") or params.get("src", "")
+            tgt = params.get("destination") or params.get("target") or params.get("dest", "")
+            state["source"] = src
+            state["destination"] = tgt
+            state["source_exists"] = Path(src).expanduser().exists() if src else False
+            state["destination_exists"] = Path(tgt).expanduser().exists() if tgt else False
 
         elif cmd_str == "focus_app" and self.automation:
             app_name = params.get("appName", "")
+            if app_name:
+                state["appName"] = app_name
+                state["app_name"] = app_name
             state["app_running"] = self.automation.is_app_running(app_name) if hasattr(self.automation, "is_app_running") else True
             if hasattr(self.automation, "is_app_active"):
                 state["app_active"] = self.automation.is_app_active(app_name)
 
         elif cmd_str == "close_app" and self.automation and hasattr(self.automation, "is_app_running"):
             app_name = params.get("appName", "")
+            if app_name:
+                state["appName"] = app_name
+                state["app_name"] = app_name
             state["app_running"] = self.automation.is_app_running(app_name)
 
         elif cmd_str == "inspect_app" and self.automation and hasattr(self.automation, "is_app_running"):
             app_name = params.get("appName", "")
+            if app_name:
+                state["appName"] = app_name
+                state["app_name"] = app_name
             state["app_running"] = self.automation.is_app_running(app_name)
 
         elif cmd_str in ("click_element", "type_in_element", "desktop_workflow"):
             state["verified_outcome"] = execution_result.data.get("verified_outcome", execution_result.ok)
+
+        elif cmd_str == "type_text":
+            data = execution_result.data if isinstance(execution_result.data, dict) else {}
+            state["text_verified"] = data.get("verified", execution_result.ok)
+            state["unverified"] = data.get("unverified", False)
+            state["already_present"] = data.get("already_present", False)
+            txt = params.get("text") or data.get("text") or ""
+            if txt:
+                state["text"] = txt
+            app = params.get("appName") or data.get("appName") or ""
+            if app:
+                state["appName"] = app
+                state["app_name"] = app
 
         return Observation(
             target=f"desktop:{cmd_str}",
@@ -130,17 +169,39 @@ class DesktopTool(BaseTool):
         cmd_str = observation.state_data.get("command", "")
         is_dry = bool(getattr(self.automation, "dry_run", False)) or "dry-run" in (execution_result.message or "").lower()
 
+        # Robust parameter extraction merging inputs.params, top-level inputs, and observation state
+        params = dict(inputs.get("params") or {})
+        for k, v in inputs.items():
+            if k not in ("command", "params", "step_id", "action") and k not in params:
+                params[k] = v
+
+        app_name = (
+            params.get("appName")
+            or inputs.get("appName")
+            or observation.state_data.get("appName")
+            or observation.state_data.get("app_name")
+            or (execution_result.data.get("appName") if isinstance(execution_result.data, dict) else "")
+            or ""
+        )
+
         if cmd_str == "open_app":
-            app_name = inputs.get("params", {}).get("appName", "")
+            if params.get("file_path") or params.get("folder"):
+                return VerificationResult(
+                    verified=execution_result.ok,
+                    confidence=1.0 if execution_result.ok else 0.0,
+                    evidence=execution_result.message or "File/folder opened.",
+                    error=None if execution_result.ok else execution_result.error,
+                )
             app_running = observation.state_data.get("app_running", True)
             if not is_dry and not app_running:
+                target_str = f"'{app_name}'" if app_name else "target application"
                 return VerificationResult(
                     verified=False,
                     confidence=1.0,
-                    evidence=f"Application failed to open: {execution_result.error or execution_result.message}",
+                    evidence=f"Application {target_str} failed to open: {execution_result.error or execution_result.message}",
                     error=execution_result.error,
                 )
-            evidence = f"Verified application '{app_name}' is running."
+            evidence = f"Verified application '{app_name}' is running." if app_name else "Verified target application is running."
             if observation.state_data.get("app_active"):
                 evidence += " In foreground."
             return VerificationResult(
@@ -149,8 +210,29 @@ class DesktopTool(BaseTool):
                 evidence=evidence,
             )
 
+        if cmd_str == "move_file":
+            if not execution_result.ok:
+                return VerificationResult(
+                    verified=False,
+                    confidence=1.0,
+                    evidence=f"Move failed: {execution_result.error or execution_result.message}",
+                    error=execution_result.error,
+                )
+            dest_exists = observation.state_data.get("destination_exists", False)
+            src_exists = observation.state_data.get("source_exists", True)
+            if not is_dry and not dest_exists:
+                return VerificationResult(
+                    verified=False,
+                    confidence=1.0,
+                    evidence="Verification failure: Destination does not exist after move.",
+                )
+            return VerificationResult(
+                verified=True,
+                confidence=1.0,
+                evidence=f"Positive disk verification: {execution_result.message}",
+            )
+
         if cmd_str == "focus_app":
-            app_name = inputs.get("params", {}).get("appName", "")
             if not execution_result.ok:
                 return VerificationResult(
                     verified=False,
@@ -158,14 +240,14 @@ class DesktopTool(BaseTool):
                     evidence=f"Focus failed: {execution_result.error or execution_result.message}",
                     error=execution_result.error,
                 )
+            evidence = f"Verified application '{app_name}' brought to foreground." if app_name else "Verified target application brought to foreground."
             return VerificationResult(
                 verified=True,
                 confidence=0.95,
-                evidence=f"Verified application '{app_name}' brought to foreground.",
+                evidence=evidence,
             )
 
         if cmd_str == "close_app":
-            app_name = inputs.get("params", {}).get("appName", "")
             if not execution_result.ok:
                 return VerificationResult(
                     verified=False,
@@ -175,15 +257,17 @@ class DesktopTool(BaseTool):
                 )
             app_running = observation.state_data.get("app_running", False)
             if not is_dry and app_running:
+                target_str = f"'{app_name}'" if app_name else "target application"
                 return VerificationResult(
                     verified=False,
                     confidence=0.9,
-                    evidence=f"Application '{app_name}' is still running and refused to close.",
+                    evidence=f"Application {target_str} is still running and refused to close.",
                 )
+            evidence = f"Verified application '{app_name}' process terminated." if app_name else "Verified target application process terminated."
             return VerificationResult(
                 verified=True,
                 confidence=1.0,
-                evidence=f"Verified application '{app_name}' process terminated.",
+                evidence=evidence,
             )
 
         if cmd_str == "inspect_app":
@@ -214,6 +298,40 @@ class DesktopTool(BaseTool):
                 verified=verified,
                 confidence=0.95 if verified else 0.4,
                 evidence=f"Screen action verified via UI state observation: {execution_result.message}" if verified else "UI outcome verification failed or state did not shift.",
+            )
+
+        if cmd_str == "type_text":
+            target_text = (
+                params.get("text")
+                or inputs.get("text")
+                or observation.state_data.get("text")
+                or (execution_result.data.get("text") if isinstance(execution_result.data, dict) else "")
+                or ""
+            )
+            if is_dry:
+                evidence = f"Dry-run: verified type_text for '{target_text}'." if target_text else "Dry-run: verified type_text."
+                return VerificationResult(
+                    verified=True,
+                    confidence=0.9,
+                    evidence=evidence,
+                )
+            text_verified = observation.state_data.get("text_verified", False)
+            unverified = observation.state_data.get("unverified", False)
+            if unverified or not text_verified:
+                target_app_phrase = f"'{app_name}'" if app_name else "target application"
+                text_phrase = f"'{target_text}'" if target_text else "requested text"
+                return VerificationResult(
+                    verified=False,
+                    confidence=0.3,
+                    evidence=f"Text verification failed: could not confirm that {text_phrase} was entered into {target_app_phrase}.",
+                    error="UNVERIFIED",
+                )
+            target_app_phrase = f"'{app_name}'" if app_name else "active application"
+            evidence = f"Verified text '{target_text}' successfully entered into {target_app_phrase}." if target_text else f"Verified text successfully entered into {target_app_phrase}."
+            return VerificationResult(
+                verified=True,
+                confidence=0.95,
+                evidence=evidence,
             )
 
         return VerificationResult(

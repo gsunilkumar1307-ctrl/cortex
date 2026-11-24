@@ -59,6 +59,7 @@ class TestIntelligentEmailAgent(unittest.TestCase):
         self.memory = EncryptedMemoryStore(str(Path(self.tmp.name) / "memory.sqlite3"))
         self.automation = DeviceAutomation(dry_run=True)
         self.orchestrator = CortexOrchestrator(self.automation, self.memory, use_gemini=False)
+        self.orchestrator.mail_automation.get_accounts = lambda: [{"name": "Default Account", "email": "user@mac.local"}]
 
     def tearDown(self):
         clear_mail_records()
@@ -307,6 +308,7 @@ class TestIntelligentEmailAgent(unittest.TestCase):
         failing_automation = DeviceAutomation(dry_run=True)
         failing_automation.mail = FailingMailAutomation(dry_run=True)
         orch = CortexOrchestrator(failing_automation, self.memory, use_gemini=False)
+        orch.mail_automation.get_accounts = lambda: [{"name": "Default Account", "email": "user@mac.local"}]
 
         resp = orch.chat("Send an email to sarah@domain.com saying weekly sync is at 4pm")
         task_id = resp["task"]["id"]

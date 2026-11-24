@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld("cortexAPI", {
   },
   getWindowMode: () => ipcRenderer.invoke("get-window-mode"),
   setWindowMode: (mode) => ipcRenderer.send("set-window-mode", mode),
+  openExternal: (url) => ipcRenderer.invoke("open-external", url),
 });

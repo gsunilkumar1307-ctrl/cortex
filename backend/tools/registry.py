@@ -59,6 +59,24 @@ class ToolRegistry:
         self.register_instance(BrowserTool(automation=self.automation))
         self.register_instance(WebSearchTool())
 
+        # Register Notes and WhatsApp Application Adapters
+        try:
+            from backend.adapters.notes_adapter import NotesAdapter
+            from backend.adapters.whatsapp_adapter import WhatsAppAdapter
+            from backend.adapters.base import AdapterToolWrapper
+        except ImportError:
+            from adapters.notes_adapter import NotesAdapter
+            from adapters.whatsapp_adapter import WhatsAppAdapter
+            from adapters.base import AdapterToolWrapper
+        dry = bool(getattr(self.automation, "dry_run", False))
+        notes_adapter = getattr(self.automation, "notes_adapter", None) or NotesAdapter(dry_run=dry)
+        self.register_instance("notes_adapter", AdapterToolWrapper(notes_adapter, "notes_adapter"))
+        self.register_instance("notes", AdapterToolWrapper(notes_adapter, "notes"))
+
+        whatsapp_adapter = getattr(self.automation, "whatsapp_adapter", None) or WhatsAppAdapter(dry_run=dry)
+        self.register_instance("whatsapp_adapter", AdapterToolWrapper(whatsapp_adapter, "whatsapp_adapter"))
+        self.register_instance("whatsapp", AdapterToolWrapper(whatsapp_adapter, "whatsapp"))
+
     def update_automation(self, automation: Any) -> None:
         self.automation = automation
         self._register_universal_tools()

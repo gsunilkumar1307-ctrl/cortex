@@ -196,13 +196,15 @@ def detect_language(text: str, gemini_model=None) -> str:
         Language code string: 'en' | 'kn' | 'hi' | 'ta' | 'te'
     """
     fast_result = detect_language_fast(text)
-
-    # If the fast heuristic is confident (non-English), trust it
     if fast_result != "en":
         return fast_result
 
-    # For short pure-English-looking input, try Gemini if available
-    if gemini_model is not None and len(text.strip()) > 3:
+    # If no model is provided, offline heuristic result 'en' is final (zero LLM overhead)
+    if gemini_model is None:
+        return "en"
+
+    # If an explicit model is provided (e.g. in targeted tests or specialized callers), allow fallback
+    if len(text.strip()) > 3:
         try:
             prompt = (
                 "Detect the language of the following user message.\n"
@@ -219,7 +221,7 @@ def detect_language(text: str, gemini_model=None) -> str:
             if code in {"en", "kn", "hi", "ta", "te"}:
                 return code
         except Exception as exc:
-            print(f"[language_detector] Gemini detection failed: {exc}", file=sys.stderr)
+            print(f"[language_detector] LLM detection failed: {exc}", file=sys.stderr)
 
     return fast_result
 
